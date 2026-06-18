@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lesson 1 — The Rack Spec | Rails Internals</title>
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div class="lesson-container">
+
+  <header class="lesson-header">
+    <div class="breadcrumb">Rails Internals &rsaquo; Foundations</div>
+    <h1>The Rack Spec</h1>
+    <p class="subtitle">The contract that makes Rails (and everything else) possible</p>
+    <div class="lesson-meta">
+      <span>Lesson 1 of ?</span>
+      <span>~20 min</span>
+      <span>Foundation</span>
+    </div>
+  </header>
+
+  <!-- ── WHY THIS MATTERS ── -->
+  <section>
+    <h2>Why start here?</h2>
+    <p>
+      Every Rails request — from the moment a socket is accepted to the moment a response is written back — passes through Rack. Understanding Rack is not optional background knowledge: it is the <strong>layer beneath ActionDispatch, beneath middleware, beneath everything</strong>. When you can read a Rack app, the rest of Rails becomes derivable rather than magical.
+    </p>
+    <p>
+      Rack is also small. The entire specification fits on one page. That makes it a perfect foundation: high leverage, low surface area.
+    </p>
+  </section>
+
+  <!-- ── WHAT IS RACK ── -->
+  <section>
+    <h2>What is Rack?</h2>
+    <p>
+      Rack is a <strong>minimal interface between Ruby web frameworks and web servers</strong>. It answers the question: how does Puma (the server) hand a request to Rails (the framework), and how does Rails hand a response back?
+    </p>
+    <p>
+      Before Rack (circa 2007), every Ruby framework had to write its own adapter for every web server. Mongrel, WEBrick, CGI — each needed custom code per framework. Rack collapsed this into a single, tiny contract. Now any server that speaks Rack can run any framework that speaks Rack.
+    </p>
+    <div class="diagram">Web Server (Puma, Falcon, Unicorn)
+        │
+        │  calls your app with (env)
+        ▼
+  ┌──────────────────┐
+  │   Rack App       │  ← any callable Ruby object
+  │  .call(env)      │
+  └──────────────────┘
+        │
+        │  returns [status, headers, body]
+        ▼
+Web Server writes response to socket</div>
+    <p>
+      That's the whole spec. A Rack app is <strong>any Ruby object that responds to <code>#call</code></strong>, accepts one argument (the <code>env</code> hash), and returns a three-element array.
+    </p>
+  </section>
+
+  <!-- ── THE CONTRACT ── -->
+  <section>
+    <h2>The contract in full</h2>
+
+    <h3>The app</h3>
+    <p>A valid Rack app must respond to <code>call(env)</code> and return a three-element array:</p>
+    <pre><code><span class="cm"># The simplest possible Rack app</span>
+app = <span class="cls">Proc</span>.new <span class="kw">do</span> |env|
+  [
+    <span class="num">200</span>,                                    <span class="cm"># 1. HTTP status (Integer)</span>
+    { <span class="str">"content-type"</span> => <span class="str">"text/plain"</span> },    <span class="cm"># 2. Headers (Hash)</span>
+    [<span class="str">"Hello, world!"</span>]                     <span class="cm"># 3. Body (responds to #each)</span>
+  ]
+<span class="kw">end</span></code></pre>
+
+    <div class="callout">
+      <div class="callout-title">The three rules</div>
+      <ol>
+        <li><strong>Status</strong> — an Integer &ge; 100</li>
+        <li><strong>Headers</strong> — a Hash. Keys and values must be Strings. Keys must not include <code>status</code> or <code>http-</code>. Header names are case-insensitive per HTTP/1.1 but Rack normalises them to lowercase.</li>
+        <li><strong>Body</strong> — any object responding to <code>#each</code>, which must yield String chunks. Common: <code>Array</code>, <code>File</code>, custom enumerator.</li>
+      </ol>
+    </div>
+
+    <h3>The <code>env</code> hash</h3>
+    <p>
+      The server populates <code>env</code> before calling your app. It contains everything about the incoming HTTP request. Key entries you'll encounter constantly:
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;font-size:0.9rem;margin:1rem 0;">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border);text-align:left;">
+          <th style="padding:0.5rem 0.75rem;">Key</th>
+          <th style="padding:0.5rem 0.75rem;">Value</th>
+          <th style="padding:0.5rem 0.75rem;">Example</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.5rem 0.75rem;"><code>REQUEST_METHOD</code></td>
+          <td style="padding:0.5rem 0.75rem;">HTTP verb (String)</td>
+          <td style="padding:0.5rem 0.75rem;"><code>"GET"</code></td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.5rem 0.75rem;"><code>PATH_INFO</code></td>
+          <td style="padding:0.5rem 0.75rem;">URL path</td>
+          <td style="padding:0.5rem 0.75rem;"><code>"/users/42"</code></td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.5rem 0.75rem;"><code>QUERY_STRING</code></td>
+          <td style="padding:0.5rem 0.75rem;">Query params (raw)</td>
+          <td style="padding:0.5rem 0.75rem;"><code>"page=2&amp;q=rack"</code></td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.5rem 0.75rem;"><code>SERVER_NAME</code></td>
+          <td style="padding:0.5rem 0.75rem;">Host name</td>
+          <td style="padding:0.5rem 0.75rem;"><code>"example.com"</code></td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.5rem 0.75rem;"><code>rack.input</code></td>
+          <td style="padding:0.5rem 0.75rem;">Request body IO</td>
+          <td style="padding:0.5rem 0.75rem;"><code>StringIO</code> object</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.5rem 0.75rem;"><code>rack.errors</code></td>
+          <td style="padding:0.5rem 0.75rem;">Error stream</td>
+          <td style="padding:0.5rem 0.75rem;"><code>$stderr</code></td>
+        </tr>
+        <tr>
+          <td style="padding:0.5rem 0.75rem;"><code>HTTP_*</code></td>
+          <td style="padding:0.5rem 0.75rem;">HTTP headers (uppercased, <code>-</code>→<code>_</code>, prefixed with <code>HTTP_</code>)</td>
+          <td style="padding:0.5rem 0.75rem;"><code>HTTP_ACCEPT</code>, <code>HTTP_AUTHORIZATION</code></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="callout info">
+      <div class="callout-title">Why HTTP_ prefix?</div>
+      CGI convention. When Rack was designed, many Ruby servers were CGI-based. The <code>HTTP_</code> prefix distinguishes HTTP headers from server-level keys like <code>REQUEST_METHOD</code>. Rails unwraps this in <code>ActionDispatch::Request</code> — when you call <code>request.headers["Authorization"]</code>, Rails is doing the translation for you.
+    </div>
+  </section>
+
+  <!-- ── RUNNING A RACK APP ── -->
+  <section>
+    <h2>Running a Rack app directly</h2>
+    <p>
+      The <code>rackup</code> command reads a <code>config.ru</code> file and starts a server. This is exactly what <code>rails server</code> does under the hood — Rails generates a <code>config.ru</code> at the root of every app.
+    </p>
+    <pre><code><span class="cm"># config.ru — every Rails app has one, look at yours right now</span>
+<span class="kw">require_relative</span> <span class="str">"config/environment"</span>
+
+run <span class="cls">Rails</span>.application</code></pre>
+    <p>
+      <code>run</code> is a Rack DSL method that sets the terminal app — the one that handles requests that no middleware intercepts. <code>Rails.application</code> is itself a Rack app (it responds to <code>#call</code>).
+    </p>
+    <p>Try it: open <code>config.ru</code> in one of your own Rails apps right now and look for the <code>run</code> call.</p>
+
+    <h3>A standalone Rack app (no Rails)</h3>
+    <pre><code><span class="cm"># config.ru</span>
+<span class="kw">require</span> <span class="str">"rack"</span>
+
+app = <span class="cls">Proc</span>.new <span class="kw">do</span> |env|
+  path = env[<span class="str">"PATH_INFO"</span>]
+  body = <span class="str">"You requested: #{path}"</span>
+  [<span class="num">200</span>, { <span class="str">"content-type"</span> => <span class="str">"text/plain"</span>, <span class="str">"content-length"</span> => body.bytesize.to_s }, [body]]
+<span class="kw">end</span>
+
+run app</code></pre>
+    <p>Run this with <code>rackup</code> and it works. That's a complete web app. No ActiveRecord, no ActionController, no views.</p>
+  </section>
+
+  <!-- ── WHERE RAILS SITS ── -->
+  <section>
+    <h2>Where Rails sits in this picture</h2>
+    <p>
+      Rails is not a Rack app that happens to have middleware. Rails <em>is</em> a Rack middleware stack — a series of Rack apps, each wrapping the next, until the innermost one (the router) reaches your controller.
+    </p>
+    <div class="diagram">  Puma
+    │
+    ▼
+  Rack::Sendfile            ← middleware
+    │
+    ▼
+  ActionDispatch::Static    ← middleware
+    │
+    ▼
+  ActionDispatch::Executor  ← middleware
+    │
+    ▼
+  ... (many more)
+    │
+    ▼
+  ActionDispatch::Router    ← finds your controller action
+    │
+    ▼
+  YourController#action     ← your code, finally</div>
+    <p>
+      You can inspect this stack yourself:
+    </p>
+    <pre><code><span class="cm"># In a Rails console</span>
+<span class="cls">Rails</span>.application.middleware.each { |m| puts m }</code></pre>
+    <div class="callout insight">
+      <div class="callout-title">Key insight</div>
+      Every middleware in this stack is itself a Rack app. Each one receives <code>env</code>, optionally mutates it, calls the next app in the chain, and optionally mutates the response on the way back out. This means the middleware stack is just a chain of nested function calls — pure Ruby, no magic.
+    </div>
+  </section>
+
+  <!-- ── QUIZ ── -->
+  <section>
+    <h2>Check your understanding</h2>
+
+    <div class="quiz" id="q1">
+      <div class="quiz-title">Quiz 1 of 3</div>
+      <p class="quiz-question">A Rack app must return a three-element array. Which of these is a valid response?</p>
+      <div class="quiz-options">
+        <button class="quiz-option" data-correct="false" onclick="answer(this,'q1')">
+          <code>[200, {}, "Hello"]</code>
+        </button>
+        <button class="quiz-option" data-correct="true" onclick="answer(this,'q1')">
+          <code>[200, {}, ["Hello"]]</code>
+        </button>
+        <button class="quiz-option" data-correct="false" onclick="answer(this,'q1')">
+          <code>["200", {}, ["Hello"]]</code>
+        </button>
+        <button class="quiz-option" data-correct="false" onclick="answer(this,'q1')">
+          <code>[200, [], ["Hello"]]</code>
+        </button>
+      </div>
+      <div class="quiz-feedback" id="q1-feedback"></div>
+    </div>
+
+    <div class="quiz" id="q2">
+      <div class="quiz-title">Quiz 2 of 3</div>
+      <p class="quiz-question">In the <code>env</code> hash, the <code>Authorization</code> HTTP header arrives under which key?</p>
+      <div class="quiz-options">
+        <button class="quiz-option" data-correct="false" onclick="answer(this,'q2')">
+          <code>"Authorization"</code>
+        </button>
+        <button class="quiz-option" data-correct="false" onclick="answer(this,'q2')">
+          <code>"AUTHORIZATION"</code>
+        </button>
+        <button class="quiz-option" data-correct="true" onclick="answer(this,'q2')">
+          <code>"HTTP_AUTHORIZATION"</code>
+        </button>
+        <button class="quiz-option" data-correct="false" onclick="answer(this,'q2')">
+          <code>"rack.authorization"</code>
+        </button>
+      </div>
+      <div class="quiz-feedback" id="q2-feedback"></div>
+    </div>
+
+    <div class="quiz" id="q3">
+      <div class="quiz-title">Quiz 3 of 3</div>
+      <p class="quiz-question">What is <code>Rails.application</code> in terms of the Rack interface?</p>
+      <div class="quiz-options">
+        <button class="quiz-option" data-correct="false" onclick="answer(this,'q3')">
+          A special class that bypasses the Rack interface entirely
+        </button>
+        <button class="quiz-option" data-correct="false" onclick="answer(this,'q3')">
+          A configuration object that Puma reads at boot time only
+        </button>
+        <button class="quiz-option" data-correct="true" onclick="answer(this,'q3')">
+          A Rack app — an object that responds to <code>#call(env)</code>
+        </button>
+        <button class="quiz-option" data-correct="false" onclick="answer(this,'q3')">
+          A Rack server that listens on a TCP port directly
+        </button>
+      </div>
+      <div class="quiz-feedback" id="q3-feedback"></div>
+    </div>
+  </section>
+
+  <!-- ── WHAT TO LOOK AT ── -->
+  <section>
+    <h2>Explore in your own codebase</h2>
+    <ol>
+      <li>Open <code>config.ru</code> in a Rails app you own. Find the <code>run</code> call. What does it pass?</li>
+      <li>In a Rails console, run <code>Rails.application.middleware.each { |m| puts m }</code>. Count how many middlewares are in the stack before your router.</li>
+      <li>Read <code>Rails.application.middleware</code> — notice that it returns a <code>MiddlewareStack</code> object, not a plain array. We'll dig into this in the next lesson.</li>
+    </ol>
+  </section>
+
+  <!-- ── PRIMARY SOURCE ── -->
+  <div class="primary-source">
+    <div class="primary-source-label">Primary Source for this lesson</div>
+    <p>
+      <strong><a href="https://github.com/rack/rack/blob/main/SPEC.rdoc" target="_blank">Rack SPEC.rdoc</a></strong> — the authoritative specification. Short enough to read in full in one sitting (about 300 lines). Read the sections on <em>The Application</em>, <em>The Environment</em>, and <em>The Response</em>. The sections on Hijacking (for WebSockets) and Streaming are worth skimming but not required yet.
+    </p>
+  </div>
+
+  <!-- ── ASK TEACHER ── -->
+  <div class="ask-teacher">
+    <strong>Questions?</strong> Ask your teacher anything — why a design choice was made, what happens in edge cases, how this connects to something you've seen in production. Type your question in the chat.
+  </div>
+
+  <!-- ── NAV ── -->
+  <nav class="lesson-nav">
+    <span></span>
+    <a href="0002-rack-middleware.html">Next: Writing Rack Middleware &rarr;</a>
+  </nav>
+
+</div>
+
+<script>
+  const feedbacks = {
+    q1: {
+      true:  "Correct. The body must respond to <code>#each</code> and yield Strings — a bare String doesn't qualify. The status must be an Integer. The headers must be a Hash.",
+      false: "Not quite. The body element (<code>\"Hello\"</code>) is a String, which doesn't respond to <code>#each</code> the way Rack requires — it must be wrapped in an Array (or any object with <code>#each</code> that yields String chunks). The status must also be an Integer, not a String."
+    },
+    q2: {
+      true:  "Correct. Rack follows CGI convention: HTTP headers are uppercased, hyphens become underscores, and the whole thing is prefixed with <code>HTTP_</code>. Rails's <code>ActionDispatch::Request#headers</code> unwraps this so you never see it at the controller level.",
+      false: "Not quite. Rack follows CGI convention and prefixes all HTTP headers with <code>HTTP_</code>, uppercases them, and converts hyphens to underscores. So <code>Authorization</code> becomes <code>HTTP_AUTHORIZATION</code>."
+    },
+    q3: {
+      true:  "Correct. <code>Rails.application</code> is a Rack-compliant object — it has a <code>#call(env)</code> method. It's also a middleware stack, so that single <code>#call</code> triggers the entire chain. This is why <code>run Rails.application</code> in <code>config.ru</code> is all Puma needs.",
+      false: "Not quite. <code>Rails.application</code> responds to <code>#call(env)</code> and returns a valid Rack response — it is a Rack app. In fact, it's a Rack middleware stack: calling it invokes every piece of middleware in sequence before reaching your router and controller."
+    }
+  };
+
+  function answer(btn, quizId) {
+    const quiz = document.getElementById(quizId);
+    const options = quiz.querySelectorAll('.quiz-option');
+    const feedback = document.getElementById(quizId + '-feedback');
+    const isCorrect = btn.dataset.correct === 'true';
+
+    options.forEach(o => {
+      o.setAttribute('disabled', true);
+      o.onclick = null;
+      if (o.dataset.correct === 'true') o.classList.add('revealed');
+    });
+
+    btn.classList.add(isCorrect ? 'correct' : 'incorrect');
+
+    feedback.innerHTML = feedbacks[quizId][isCorrect];
+    feedback.className = 'quiz-feedback show ' + (isCorrect ? 'correct' : 'incorrect');
+  }
+</script>
+</body>
+</html>
