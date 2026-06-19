@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lesson 2 — Rack Middleware | Rails Internals</title>
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div class="lesson-container">
+
+  <header class="lesson-header">
+    <div class="breadcrumb">Rails Internals &rsaquo; Foundations</div>
+    <h1>Rack Middleware</h1>
+    <p class="subtitle">How Rails intercepts, augments, and short-circuits requests</p>
+    <div class="lesson-meta">
+      <span>Lesson 2 of ?</span>
+      <span>~25 min</span>
+      <span>Foundation</span>
+    </div>
+  </header>
+
+  <!-- ── WHY THIS MATTERS ── -->
+  <section>
+    <h2>Why middleware is the thing to understand</h2>
+    <p>
+      The Rails middleware stack is not a list of optional plugins bolted on to Rails.
+      It <em>is</em> Rails — the auth check, session handling, request logging, parameter parsing,
+      and static file serving all happen in middleware, <strong>before your controller is even found</strong>.
+    </p>
+    <p>
+      When you read a stack trace that starts with <code>ActionDispatch::ShowExceptions</code>
+      or see a 422 you didn't write, you are looking at middleware. Once you understand the
+      middleware pattern, you can trace any behaviour in the Rails request lifecycle to its
+      exact source in <code>actionpack/lib/action_dispatch/middleware/</code>.
+    </p>
+  </section>
+
+  <!-- ── THE PATTERN ── -->
+  <section>
+    <h2>The middleware pattern</h2>
+    <p>
+      In <a href="0001-the-rack-spec.html">Lesson 1</a> you saw that a Rack app is any object
+      responding to <code>#call(env)</code> that returns <code>[status, headers, body]</code>.
+      A middleware is a Rack app that <strong>wraps another Rack app</strong>.
+    </p>
+    <pre><code><span class="kw">class</span> <span class="cls">MyMiddleware</span>
+  <span class="kw">def</span> <span class="fn">initialize</span>(app)   <span class="cm"># app = the next Rack app in the chain</span>
+    @app = app
+  <span class="kw">end</span>
+
+  <span class="kw">def</span> <span class="fn">call</span>(env)
+    <span class="cm"># 1. Do something before the request hits the next app</span>
+    env[<span class="str">"my.timestamp"</span>] = <span class="cls">Time</span>.now
+
+    <span class="cm"># 2. Call the next app — get back [status, headers, body]</span>
+    status, headers, body = @app.call(env)
+
+    <span class="cm"># 3. Do something with the response before returning it</span>
+    headers[<span class="str">"x-processed-by"</span>] = <span class="str">"MyMiddleware"</span>
+
+    [status, headers, body]
+  <span class="kw">end</span>
+<span class="kw">end</span></code></pre>
+
+    <p>
+      The three-step shape — <strong>before / delegate / after</strong> — is the core pattern.
+      Every middleware in Rails follows it, from the simplest to the most complex.
+    </p>
+
+    <div class="diagram">  Puma calls env into the outermost middleware
+  ┌────────────────────────────────────────────────┐
+  │ MyMiddleware#call(env)                         │
+  │                                                │
+  │   mutate env ─────────────────────────────┐   │
+  │                                           │   │
+  │   ┌────────────────────────────────────┐  │   │
+  │   │ next_app.call(env)                 │◄─┘   │
+  │   │   (another middleware, or router)  │      │
+  │   └────────────────────────────────────┘      │
+  │                           │                   │
+  │   mutate response ◄───────┘                   │
+  │                                               │
+  └───────────────────────────────────────────────┘
+                              │
+                  returns [status, headers, body] to Puma</div>
+  </section>
+
+  <!-- ── THREE THINGS MIDDLEWARE CAN DO ── -->
+  <section>
+    <h2>The three things a middleware can do</h2>
+
+    <h3>1 — Mutate the environment (request)</h3>
+    <p>
+      Add keys, read or rewrite headers, parse the body, set the current user.
+      <code>ActionDispatch::RequestId</code> generates a unique request ID and sets it in
+      <code>env["action_dispatch.request_id"]</code> before calling downstream.
+    </p>
+
+    <h3>2 — Mutate the response</h3>
+    <p>
+      Inspect or rewrite the status code, add response headers, buffer and transform the body.
+      <code>Rack::Sendfile</code> rewrites the response body to an <code>X-Sendfile</code> header
+      so Nginx can serve the file directly.
+    </p>
+
+    <h3>3 — Short-circuit (never call <code>@app</code>)</h3>
+    <p>
+      Return a response immediately without calling the next app. Used for things like
+      serving static assets (<code>ActionDispatch::Static</code>) and health check endpoints.
+      If the file exists, return it. If not, pass through.
+    </p>
+    <pre><code><span class="kw">def</span> <span class="fn">call</span>(env)
+  <span class="kw">if</span> env[<span class="str">"PATH_INFO"</span>] == <span class="str">"/healthz"</span>
+    <span class="kw">return</span> [<span class="num">200</span>, { <span class="str">"content-type"</span> => <span class="str">"text/plain"</span> }, [<span class="str">"ok"</span>]]
+  <span class="kw">end</span>
+  @app.call(env)   <span class="cm"># everything else passes through</span>
+<span class="kw">end</span></code></pre>
+
+    <div class="callout insight">
+      <div class="callout-title">Key insight</div>
+      Short-circuiting is why some requests never reach your controller at all.
+      If <code>ActionDispatch::Static</code> finds a file in <code>public/</code>, it returns it
+      and your entire app — router, controller, ActiveRecord — is never touched.
+      This is pure Rack: the chain terminates at whichever middleware returns first.
+    </div>
+  </section>
+
+  <!-- ── THE RAILS MIDDLEWARE STACK ── -->
+  <section>
+    <h2>Rails's middleware stack</h2>
+    <p>
+      Rails assembles its middleware stack at boot time in
+      <a href="https://github.com/rails/rails/blob/main/railties/lib/rails/application/default_middleware_stack.rb" target="_blank"><code>railties/lib/rails/application/default_middleware_stack.rb</code></a>.
+      You can inspect the full ordered list at any time:
+    </p>
+    <pre><code><span class="cm"># In a Rails console (rails c)</span>
+<span class="cls">Rails</span>.application.middleware.each { |m| puts m.name }
+
+<span class="cm"># Or from the terminal</span>
+bin/rails middleware</code></pre>
+
+    <p>A typical Rails 7 app shows roughly 20 middlewares. Here are the ones you'll encounter most:</p>
+
+    <table style="width:100%;border-collapse:collapse;font-size:0.88rem;margin:1rem 0;">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border);text-align:left;">
+          <th style="padding:0.5rem 0.75rem;">Middleware</th>
+          <th style="padding:0.5rem 0.75rem;">What it does</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.5rem 0.75rem;"><code>Rack::Sendfile</code></td>
+          <td style="padding:0.5rem 0.75rem;">Rewrites file responses to <code>X-Sendfile</code> for Nginx/Apache</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.5rem 0.75rem;"><code>ActionDispatch::Static</code></td>
+          <td style="padding:0.5rem 0.75rem;">Serves files from <code>public/</code> — short-circuits before routing</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.5rem 0.75rem;"><code>ActionDispatch::Executor</code></td>
+          <td style="padding:0.5rem 0.75rem;">Wraps each request in the Rails executor (code reloading, async)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.5rem 0.75rem;"><code>ActionDispatch::Session::CookieStore</code></td>
+          <td style="padding:0.5rem 0.75rem;">Reads/writes the signed encrypted session cookie</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.5rem 0.75rem;"><code>ActionDispatch::Flash</code></td>
+          <td style="padding:0.5rem 0.75rem;">Populates <code>flash</code> from session and sweeps it</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.5rem 0.75rem;"><code>Rack::MethodOverride</code></td>
+          <td style="padding:0.5rem 0.75rem;">Turns <code>_method=PATCH</code> form params into <code>REQUEST_METHOD</code></td>
+        </tr>
+        <tr>
+          <td style="padding:0.5rem 0.75rem;"><code>ActionDispatch::Routing::RouteSet</code></td>
+          <td style="padding:0.5rem 0.75rem;">The router — dispatches to your controller action</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="callout info">
+      <div class="callout-title">Where to find these in Rails source</div>
+      All ActionDispatch middlewares live in
+      <a href="https://github.com/rails/rails/tree/main/actionpack/lib/action_dispatch/middleware" target="_blank"><code>actionpack/lib/action_dispatch/middleware/</code></a>.
+      Each file is one middleware class. Reading <code>session/cookie_store.rb</code> or
+      <code>flash.rb</code> is now completely tractable — they're just classes with
+      <code>initialize(app)</code> and <code>call(env)</code>.
+    </div>
+  </section>
+
+  <!-- ── BUILD YOUR OWN ── -->
+  <section>
+    <h2>Build a real middleware in your app</h2>
+    <p>
+      Concretely, here is a middleware that logs request duration. This exact shape — measure,
+      delegate, measure again — appears in production observability middlewares like
+      <a href="https://github.com/yammer/rack-timer" target="_blank">rack-timer</a> and
+      custom Datadog wrappers.
+    </p>
+    <pre><code><span class="cm"># app/middleware/request_timer.rb</span>
+<span class="kw">class</span> <span class="cls">RequestTimer</span>
+  <span class="kw">def</span> <span class="fn">initialize</span>(app)
+    @app = app
+  <span class="kw">end</span>
+
+  <span class="kw">def</span> <span class="fn">call</span>(env)
+    start = <span class="cls">Process</span>.clock_gettime(<span class="cls">Process</span>::CLOCK_MONOTONIC)
+    status, headers, body = @app.call(env)
+    elapsed = <span class="cls">Process</span>.clock_gettime(<span class="cls">Process</span>::CLOCK_MONOTONIC) - start
+
+    headers[<span class="str">"x-runtime"</span>] = <span class="str">"%.3f"</span> % elapsed
+    [status, headers, body]
+  <span class="kw">end</span>
+<span class="kw">end</span></code></pre>
+
+    <p>Register it in <code>config/application.rb</code>:</p>
+    <pre><code><span class="cm"># config/application.rb</span>
+<span class="kw">module</span> <span class="cls">MyApp</span>
+  <span class="kw">class</span> <span class="cls">Application</span> &lt; <span class="cls">Rails</span>::<span class="cls">Application</span>
+    config.middleware.use <span class="cls">RequestTimer</span>
+  <span class="kw">end</span>
+<span class="kw">end</span></code></pre>
+
+    <p>
+      <code>use</code> appends to the end of the stack (just before the router).
+      If you need a specific position:
+    </p>
+    <pre><code>config.middleware.insert_before <span class="cls">ActionDispatch</span>::<span class="cls">Static</span>, <span class="cls">RequestTimer</span>
+config.middleware.insert_after  <span class="cls">Rack</span>::<span class="cls">Sendfile</span>,          <span class="cls">RequestTimer</span></code></pre>
+
+    <div class="callout warning">
+      <div class="callout-title">Order matters</div>
+      Middleware runs outside-in on the request and inside-out on the response.
+      A middleware inserted before <code>ActionDispatch::Session</code> can't read
+      <code>env["rack.session"]</code> — session hasn't been populated yet.
+      Always check where the key you need is set before deciding where to insert.
+    </div>
+
+    <h3>Try it now</h3>
+    <ol>
+      <li>
+        Create <code>app/middleware/request_timer.rb</code> in a Rails app you own
+        and register it with <code>config.middleware.use RequestTimer</code>.
+      </li>
+      <li>
+        Run <code>bin/rails middleware</code> — confirm <code>RequestTimer</code> appears.
+      </li>
+      <li>
+        Hit any endpoint with <code>curl -i http://localhost:3000/</code> and look for
+        the <code>x-runtime</code> header in the response.
+      </li>
+      <li>
+        Experiment: move it with <code>insert_before</code> and re-run
+        <code>bin/rails middleware</code> to see the position change.
+      </li>
+    </ol>
+  </section>
+
+  <!-- ── A REAL RAILS MIDDLEWARE ── -->
+  <section>
+    <h2>Reading a real Rails middleware</h2>
+    <p>
+      Open <a href="https://github.com/rails/rails/blob/main/actionpack/lib/action_dispatch/middleware/request_id.rb" target="_blank"><code>actionpack/lib/action_dispatch/middleware/request_id.rb</code></a>.
+      It's about 40 lines. You should now be able to read it cold:
+    </p>
+    <ul>
+      <li><code>initialize(@app)</code> — stores the next app</li>
+      <li><code>call(env)</code> — generates or reads a request ID, sets it on <code>env</code>, calls <code>@app.call(env)</code>, then sets it on the response headers too</li>
+      <li>The <code>make_request_id</code> helper normalises the incoming <code>X-Request-Id</code> header or generates a UUID</li>
+    </ul>
+    <p>
+      This is the codebase you'll eventually contribute to. Notice it's just Ruby classes —
+      no metaprogramming, no DSL magic. The middleware pattern is the whole abstraction.
+    </p>
+  </section>
+
+  <!-- ── QUIZ ── -->
+  <section>
+    <h2>Check your understanding</h2>
+
+    <div class="quiz" id="q1">
+      <div class="quiz-title">Quiz 1 of 3</div>
+      <p class="quiz-question">What does a middleware <em>always</em> receive in <code>initialize</code>?</p>
+      <div class="quiz-options">
+        <button class="quiz-option" data-correct="false" onclick="answer(this,'q1')">
+          The Rack <code>env</code> hash for the current request
+        </button>
+        <button class="quiz-option" data-correct="true" onclick="answer(this,'q1')">
+          The next Rack app in the middleware chain
+        </button>
+        <button class="quiz-option" data-correct="false" onclick="answer(this,'q1')">
+          The Rails application configuration object
+        </button>
+        <button class="quiz-option" data-correct="false" onclick="answer(this,'q1')">
+          The three-element response from the inner app
+        </button>
+      </div>
+      <div class="quiz-feedback" id="q1-feedback"></div>
+    </div>
+
+    <div class="quiz" id="q2">
+      <div class="quiz-title">Quiz 2 of 3</div>
+      <p class="quiz-question">A middleware returns a response <em>without</em> calling <code>@app.call(env)</code>. What is this called, and what is a real example in Rails?</p>
+      <div class="quiz-options">
+        <button class="quiz-option" data-correct="false" onclick="answer(this,'q2')">
+          Delegation — used by <code>ActionDispatch::Flash</code> to read session cookies
+        </button>
+        <button class="quiz-option" data-correct="false" onclick="answer(this,'q2')">
+          Interception — used by <code>Rack::MethodOverride</code> to rewrite HTTP verbs
+        </button>
+        <button class="quiz-option" data-correct="true" onclick="answer(this,'q2')">
+          Short-circuiting — used by <code>ActionDispatch::Static</code> to serve public files
+        </button>
+        <button class="quiz-option" data-correct="false" onclick="answer(this,'q2')">
+          Passthrough — used by <code>ActionDispatch::Executor</code> to wrap code reloading
+        </button>
+      </div>
+      <div class="quiz-feedback" id="q2-feedback"></div>
+    </div>
+
+    <div class="quiz" id="q3">
+      <div class="quiz-title">Quiz 3 of 3</div>
+      <p class="quiz-question">You want your middleware to run <em>after</em> the session has been loaded (so you can read <code>env["rack.session"]</code>). Which config call do you use?</p>
+      <div class="quiz-options">
+        <button class="quiz-option" data-correct="false" onclick="answer(this,'q3')">
+          <code>config.middleware.use MyMiddleware</code>
+        </button>
+        <button class="quiz-option" data-correct="false" onclick="answer(this,'q3')">
+          <code>config.middleware.insert_before ActionDispatch::Session::CookieStore, MyMiddleware</code>
+        </button>
+        <button class="quiz-option" data-correct="true" onclick="answer(this,'q3')">
+          <code>config.middleware.insert_after ActionDispatch::Session::CookieStore, MyMiddleware</code>
+        </button>
+        <button class="quiz-option" data-correct="false" onclick="answer(this,'q3')">
+          <code>config.middleware.swap ActionDispatch::Session::CookieStore, MyMiddleware</code>
+        </button>
+      </div>
+      <div class="quiz-feedback" id="q3-feedback"></div>
+    </div>
+  </section>
+
+  <!-- ── WHAT TO LOOK AT ── -->
+  <section>
+    <h2>Explore in the Rails source</h2>
+    <ol>
+      <li>
+        Read <a href="https://github.com/rails/rails/blob/main/actionpack/lib/action_dispatch/middleware/request_id.rb" target="_blank"><code>action_dispatch/middleware/request_id.rb</code></a> in full.
+        You now have all the tools to understand every line.
+      </li>
+      <li>
+        Run <code>bin/rails middleware</code> in an app you own.
+        Pick two middlewares from the list and find their source files in
+        <code>actionpack/lib/action_dispatch/middleware/</code>.
+      </li>
+      <li>
+        Look at <a href="https://github.com/rails/rails/blob/main/railties/lib/rails/application/default_middleware_stack.rb" target="_blank"><code>railties/lib/rails/application/default_middleware_stack.rb</code></a>
+        — this is where Rails decides which middlewares to include by default and in what order.
+        Notice how it uses conditionals based on <code>config</code> settings to include or
+        exclude things like <code>ActionDispatch::Session::CookieStore</code>.
+      </li>
+    </ol>
+  </section>
+
+  <!-- ── PRIMARY SOURCE ── -->
+  <div class="primary-source">
+    <div class="primary-source-label">Primary Source for this lesson</div>
+    <p>
+      <strong><a href="https://guides.rubyonrails.org/rails_on_rack.html" target="_blank">Rails on Rack — Rails Guides</a></strong> —
+      the official guide on how Rails sits on Rack. Read sections 2 (Creating a Rack Application),
+      3 (Action Pack on Rack), and 4 (Rails Middleware Stack). Section 4.3 lists every default
+      middleware with a one-line description — use it as a cheat sheet when reading stack traces.
+    </p>
+  </div>
+
+  <!-- ── ASK TEACHER ── -->
+  <div class="ask-teacher">
+    <strong>Questions?</strong> Ask your teacher anything — why a middleware is ordered the way it is,
+    what happens if you remove one, how this connects to a problem you've debugged.
+    Type your question in the chat.
+  </div>
+
+  <!-- ── NAV ── -->
+  <nav class="lesson-nav">
+    <a href="0001-the-rack-spec.html">&larr; Lesson 1: The Rack Spec</a>
+    <a href="0003-action-dispatch.html">Next: ActionDispatch &rarr;</a>
+  </nav>
+
+</div>
+
+<script>
+  const feedbacks = {
+    q1: {
+      true:  "Correct. <code>initialize</code> always receives the next app in the chain — stored as <code>@app</code>. The <code>env</code> hash arrives later, once per request, in <code>call(env)</code>. The middleware stack is assembled at boot; <code>call</code> runs at request time.",
+      false: "Not quite. <code>initialize</code> receives the <em>next Rack app</em> in the chain, stored as <code>@app</code>. The <code>env</code> hash, configuration, and response all arrive later — at request time in <code>call(env)</code>. The stack is wired up once at boot."
+    },
+    q2: {
+      true:  "Correct. Short-circuiting means returning a response without calling <code>@app</code> at all. <code>ActionDispatch::Static</code> does exactly this: if the requested path matches a file in <code>public/</code>, it serves the file and the router, controller, and entire app are never invoked.",
+      false: "Not quite. The pattern of returning a response without calling <code>@app.call(env)</code> is called short-circuiting. The most direct Rails example is <code>ActionDispatch::Static</code> — it checks whether the path matches a file in <code>public/</code> and serves it immediately if so, bypassing everything downstream."
+    },
+    q3: {
+      true:  "Correct. <code>insert_after</code> places your middleware downstream of the named one — meaning it runs later on the inbound path, after the session store has already populated <code>env[\"rack.session\"]</code>. <code>insert_before</code> would put you upstream, before the session is available.",
+      false: "Not quite. To read <code>env[\"rack.session\"]</code>, your middleware must run <em>after</em> the session middleware populates it. That means you need to be positioned downstream, which is <code>insert_after ActionDispatch::Session::CookieStore</code>. The middleware stack runs outside-in: earlier in the list = earlier on the inbound path."
+    }
+  };
+
+  function answer(btn, quizId) {
+    const quiz = document.getElementById(quizId);
+    const options = quiz.querySelectorAll('.quiz-option');
+    const feedback = document.getElementById(quizId + '-feedback');
+    const isCorrect = btn.dataset.correct === 'true';
+
+    options.forEach(o => {
+      o.setAttribute('disabled', true);
+      o.onclick = null;
+      if (o.dataset.correct === 'true') o.classList.add('revealed');
+    });
+
+    btn.classList.add(isCorrect ? 'correct' : 'incorrect');
+
+    feedback.innerHTML = feedbacks[quizId][isCorrect];
+    feedback.className = 'quiz-feedback show ' + (isCorrect ? 'correct' : 'incorrect');
+  }
+</script>
+</body>
+</html>
