@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 2 — Sequences &amp; Mappings</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="lesson-container">
+
+  <header class="lesson-header">
+    <div class="breadcrumb">YAML Spec · Lesson 2 of ?</div>
+    <h1>Sequences &amp; Mappings — building structure</h1>
+    <p class="subtitle">Every config file is a tree of these two collection types. Know them cold.</p>
+    <div class="lesson-meta">
+      <span>⏱ ~15 min</span>
+      <span>🎯 Block/flow styles, nesting, yaml.v3 struct tags, gotchas</span>
+    </div>
+  </header>
+
+  <!-- ── 1. Two collection types ── -->
+  <h2>The two collection types</h2>
+
+  <p>YAML has exactly two ways to group values:</p>
+
+  <ul>
+    <li>A <strong>sequence</strong> is an ordered list of values. Think <code>[]T</code> in Go.</li>
+    <li>A <strong>mapping</strong> is an unordered set of key–value pairs. Think <code>map[K]V</code> or a struct in Go.</li>
+  </ul>
+
+  <p>Both can be written in <strong>block style</strong> (one entry per line, indented) or <strong>flow style</strong> (inline, bracketed). The meaning is identical — style is a readability choice.</p>
+
+  <!-- ── 2. Sequences ── -->
+  <h2>Sequences</h2>
+
+  <h3>Block style</h3>
+  <p>Each item is introduced by a dash and a space (<code>- </code>). The dash is the <em>block sequence entry</em> indicator.</p>
+
+  <pre><span class="key">servers</span>:
+  <span class="sym">-</span> <span class="val">alpha.example.com</span>
+  <span class="sym">-</span> <span class="val">beta.example.com</span>
+  <span class="sym">-</span> <span class="val">gamma.example.com</span></pre>
+
+  <p>Indentation matters: every <code>-</code> must sit at the same column to be part of the same sequence. The items themselves (here, plain scalars) can be more complex — a mapping, another sequence, anything.</p>
+
+  <h3>Flow style</h3>
+  <p>Wrap items in square brackets, separated by commas. Useful for short, homogeneous lists:</p>
+
+  <pre><span class="key">allowed_envs</span>: <span class="sym">[</span><span class="str">dev</span><span class="sym">,</span> <span class="str">staging</span><span class="sym">,</span> <span class="str">prod</span><span class="sym">]</span>
+<span class="key">port_range</span>:   <span class="sym">[</span><span class="num">8080</span><span class="sym">,</span> <span class="num">8443</span><span class="sym">,</span> <span class="num">9000</span><span class="sym">]</span></pre>
+
+  <div class="callout info">
+    <div class="callout-title">Style convention</div>
+    <p>Use block style for sequences of complex items (mappings, multi-line strings). Use flow style only for short, flat lists of scalars — it signals "this is a simple enumeration."</p>
+  </div>
+
+  <!-- ── 3. Mappings ── -->
+  <h2>Mappings</h2>
+
+  <h3>Block style</h3>
+  <p>Each entry is <code>key: value</code>, one per line. The space after the colon is <em>mandatory</em> — without it YAML treats the entire token as a scalar.</p>
+
+  <pre><span class="key">database</span>:
+  <span class="key">host</span>:     <span class="val">localhost</span>
+  <span class="key">port</span>:     <span class="num">5432</span>
+  <span class="key">name</span>:     <span class="val">myapp</span>
+  <span class="key">ssl</span>:      <span class="kw">true</span></pre>
+
+  <h3>Flow style</h3>
+  <p>Wrap entries in curly braces, comma-separated. Good for small, flat inline objects:</p>
+
+  <pre><span class="key">tls</span>: <span class="sym">{</span><span class="key">cert</span><span class="sym">:</span> <span class="val">cert.pem</span><span class="sym">,</span> <span class="key">key</span><span class="sym">:</span> <span class="val">key.pem</span><span class="sym">}</span></pre>
+
+  <div class="callout gotcha">
+    <div class="callout-title">The space after the colon</div>
+    <p><code>host:localhost</code> (no space) is a single <em>scalar</em> with value <code>"host:localhost"</code>, not a mapping entry. The colon is only a mapping indicator when followed by a space (or end of line).</p>
+  </div>
+
+  <!-- ── 4. Nesting ── -->
+  <h2>Nesting collections</h2>
+
+  <p>Sequences and mappings compose freely. A real CLI config typically looks like this:</p>
+
+  <pre><span class="key">app</span>:
+  <span class="key">name</span>:    <span class="val">my-cli-tool</span>
+  <span class="key">version</span>: <span class="str">"1.0.0"</span>
+
+<span class="key">log</span>:
+  <span class="key">level</span>:   <span class="val">info</span>
+  <span class="key">outputs</span>:
+    <span class="sym">-</span> <span class="val">stdout</span>
+    <span class="sym">-</span> <span class="val">/var/log/my-cli-tool.log</span>
+
+<span class="key">plugins</span>:
+  <span class="sym">-</span> <span class="key">name</span>:    <span class="val">audit</span>
+    <span class="key">enabled</span>: <span class="kw">true</span>
+  <span class="sym">-</span> <span class="key">name</span>:    <span class="val">cache</span>
+    <span class="key">enabled</span>: <span class="kw">false</span></pre>
+
+  <p>The <code>plugins</code> key holds a sequence of mappings. Note the indentation: the mapping keys (<code>name</code>, <code>enabled</code>) sit indented <em>relative to their <code>-</code></em>. YAML allows the keys to start on the same line as the dash or on the next.</p>
+
+  <div class="compare">
+    <div class="compare-col">
+      <h4>Keys on same line as dash</h4>
+      <pre><span class="sym">-</span> <span class="key">name</span>: <span class="val">audit</span>
+  <span class="key">enabled</span>: <span class="kw">true</span></pre>
+    </div>
+    <div class="compare-col">
+      <h4>Keys on next line (explicit)</h4>
+      <pre><span class="sym">-</span>
+  <span class="key">name</span>: <span class="val">audit</span>
+  <span class="key">enabled</span>: <span class="kw">true</span></pre>
+    </div>
+  </div>
+  <p>Both are valid and equivalent. The first is more common; the second is useful when the first key name is long and you want them all aligned.</p>
+
+  <!-- ── 5. yaml.v3 ── -->
+  <h2>How yaml.v3 maps these to Go</h2>
+
+  <h3>Sequences → slices</h3>
+  <p>A YAML sequence unmarshals into a Go <code>[]T</code> where <code>T</code> is inferred from the first element, or <code>interface{}</code> when the type is mixed or unknown:</p>
+
+  <pre><span class="cm">// Config Go struct
+</span><span class="cls">type</span> <span class="fn">Config</span> <span class="cls">struct</span> {
+  <span class="fn">Servers</span> []<span class="cls">string</span>  <span class="str">`yaml:"servers"`</span>
+  <span class="fn">Plugins</span> []<span class="fn">Plugin</span>  <span class="str">`yaml:"plugins"`</span>
+}</pre>
+
+  <h3>Mappings → structs or maps</h3>
+  <p>A YAML mapping unmarshals into a Go <strong>struct</strong> (for known schemas) or a <strong>map</strong> (for dynamic/unknown keys):</p>
+
+  <pre><span class="cm">// Struct: schema is known at compile time
+</span><span class="cls">type</span> <span class="fn">Database</span> <span class="cls">struct</span> {
+  <span class="fn">Host</span> <span class="cls">string</span> <span class="str">`yaml:"host"`</span>
+  <span class="fn">Port</span> <span class="cls">int</span>    <span class="str">`yaml:"port"`</span>
+}
+
+<span class="cm">// map: dynamic keys (e.g. user-defined labels)
+</span><span class="cls">type</span> <span class="fn">Config</span> <span class="cls">struct</span> {
+  <span class="fn">Labels</span> <span class="cls">map</span>[<span class="cls">string</span>]<span class="cls">string</span> <span class="str">`yaml:"labels"`</span>
+}</pre>
+
+  <div class="callout gotcha">
+    <div class="callout-title">interface{} and map key type</div>
+    <p>When yaml.v3 unmarshals a mapping into an <code>interface{}</code>, the concrete type is <strong><code>map[string]interface{}</code></strong> — not <code>map[interface{}]interface{}</code> as yaml.v2 used to produce. This is a breaking change between v2 and v3 that trips people up when migrating.</p>
+  </div>
+
+  <h3>The essential struct tags</h3>
+
+  <div class="diagram">yaml:"name"        — use this key name instead of the lowercased field name
+yaml:",omitempty"  — skip the field when marshalling if it's the zero value
+yaml:",inline"     — flatten a nested struct into the parent mapping
+yaml:"-"           — never marshal or unmarshal this field</div>
+
+  <p>You can combine the name and options: <code>yaml:"host,omitempty"</code>.</p>
+
+  <pre><span class="cls">type</span> <span class="fn">Server</span> <span class="cls">struct</span> {
+  <span class="fn">Host</span>     <span class="cls">string</span>  <span class="str">`yaml:"host"`</span>
+  <span class="fn">Port</span>     <span class="cls">int</span>     <span class="str">`yaml:"port,omitempty"`</span>  <span class="cm">// omit when 0</span>
+  <span class="fn">internal</span> <span class="cls">string</span>  <span class="str">`yaml:"-"`</span>               <span class="cm">// never in config</span>
+}
+
+<span class="cls">type</span> <span class="fn">Config</span> <span class="cls">struct</span> {
+  <span class="fn">Server</span>  <span class="cm">// inline: Host/Port appear at the top level</span>
+  <span class="fn">Log</span>    <span class="fn">LogConfig</span> <span class="str">`yaml:"log,inline"`</span>
+}</pre>
+
+  <div class="callout info">
+    <div class="callout-title">Default key name</div>
+    <p>Without a <code>yaml:</code> tag, yaml.v3 lowercases the field name: field <code>MaxRetries</code> maps to key <code>maxretries</code> (no separator). Use explicit tags for anything other than simple lowercase names.</p>
+  </div>
+
+  <!-- ── 6. Gotchas ── -->
+  <h2>Gotchas</h2>
+
+  <h3>Duplicate mapping keys</h3>
+  <p>The YAML spec says duplicate keys <em>should not</em> be used — but doesn't forbid them. yaml.v3 accepts them silently, with the last value winning:</p>
+
+  <pre><span class="key">port</span>: <span class="num">5432</span>
+<span class="key">port</span>: <span class="num">3306</span>   <span class="cm"># this wins — no error, no warning</span></pre>
+
+  <div class="callout warning">
+    <div class="callout-title">Duplicate key danger</div>
+    <p>A misconfigured file with two <code>port</code> keys won't surface an error. Validate your config schema programmatically (e.g. with <code>KnownFields</code> or a struct validator) rather than relying on the parser to catch it.</p>
+  </div>
+
+  <h3>Null values in sequences</h3>
+  <p>A bare <code>-</code> with nothing after it is a null entry, not an empty string:</p>
+
+  <pre><span class="key">tags</span>:
+  <span class="sym">-</span> <span class="val">prod</span>
+  <span class="sym">-</span>          <span class="cm"># null — unmarshals to "" for string, 0 for int</span>
+  <span class="sym">-</span> <span class="val">stable</span></pre>
+
+  <h3>Map key ordering</h3>
+  <p>YAML mappings are <em>unordered</em> by definition. yaml.v3 does not preserve insertion order when unmarshalling into a <code>map</code>. If order matters (e.g. a list of named steps), use a sequence of mappings instead of a mapping:</p>
+
+  <pre><span class="cm"># Bad — map iteration order is undefined
+</span><span class="key">steps</span>:
+  <span class="key">checkout</span>: <span class="num">1</span>
+  <span class="key">build</span>:    <span class="num">2</span>
+  <span class="key">test</span>:     <span class="num">3</span>
+
+<span class="cm"># Good — sequence preserves order
+</span><span class="key">steps</span>:
+  <span class="sym">-</span> <span class="val">checkout</span>
+  <span class="sym">-</span> <span class="val">build</span>
+  <span class="sym">-</span> <span class="val">test</span></pre>
+
+  <!-- ── 7. Quiz ── -->
+  <h2>Check your understanding</h2>
+
+  <div class="quiz">
+    <div class="quiz-title">Quiz 1</div>
+    <p class="quiz-question">What is the correct flow style syntax for a YAML sequence?</p>
+    <div class="quiz-options">
+      <button class="quiz-option" data-correct="true">[alpha, beta, gamma]   — square brackets</button>
+      <button class="quiz-option" data-correct="false">{alpha, beta, gamma}   — curly brackets</button>
+      <button class="quiz-option" data-correct="false">(alpha, beta, gamma)   — round brackets</button>
+      <button class="quiz-option" data-correct="false">&lt;alpha, beta, gamma&gt;   — angle brackets</button>
+    </div>
+    <div class="quiz-feedback"
+         data-correct="Correct. Square brackets [ ] denote a flow sequence. Curly braces { } are for flow mappings."
+         data-incorrect="Flow sequences use square brackets [ ]. Curly braces { } are the flow mapping syntax.">
+    </div>
+  </div>
+
+  <div class="quiz">
+    <div class="quiz-title">Quiz 2</div>
+    <p class="quiz-question">You unmarshal a YAML mapping into an <code>interface{}</code> using yaml.v3. What concrete Go type is produced?</p>
+    <div class="quiz-options">
+      <button class="quiz-option" data-correct="true">map[string]interface{}</button>
+      <button class="quiz-option" data-correct="false">map[interface{}]interface{}</button>
+      <button class="quiz-option" data-correct="false">map[string]string</button>
+      <button class="quiz-option" data-correct="false">[]map[string]interface{}</button>
+    </div>
+    <div class="quiz-feedback"
+         data-correct="Correct. yaml.v3 changed this from yaml.v2 — v2 produced map[interface{}]interface{}, v3 produces map[string]interface{}."
+         data-incorrect="yaml.v3 produces map[string]interface{}. The map[interface{}]interface{} type is the yaml.v2 behaviour — this is a common source of v2→v3 migration bugs.">
+    </div>
+  </div>
+
+  <div class="quiz">
+    <div class="quiz-title">Quiz 3</div>
+    <p class="quiz-question">Which yaml.v3 struct tag causes a field to be skipped entirely during both marshalling and unmarshalling?</p>
+    <div class="quiz-options">
+      <button class="quiz-option" data-correct="false">yaml:",omitempty"</button>
+      <button class="quiz-option" data-correct="true">yaml:"-"</button>
+      <button class="quiz-option" data-correct="false">yaml:",inline"</button>
+      <button class="quiz-option" data-correct="false">yaml:",skip"</button>
+    </div>
+    <div class="quiz-feedback"
+         data-correct='Correct. yaml:"-" means "never touch this field". omitempty only skips on marshal when the value is zero — it still unmarshals.'
+         data-incorrect='yaml:"-" completely excludes the field. omitempty still participates in unmarshalling; it only skips marshalling when the value is zero.'>
+    </div>
+  </div>
+
+  <!-- ── Primary source ── -->
+  <div class="primary-source">
+    <div class="primary-source-label">Primary source for this lesson</div>
+    <p><a href="https://yaml.org/spec/1.2.2/#chapter-8-block-style-productions" target="_blank">YAML 1.2.2 Specification — §8: Block Style Productions</a> — defines block sequences (§8.2.1) and block mappings (§8.2.2) with the exact grammar rules for indicators, indentation, and nesting. Pair it with the <a href="https://pkg.go.dev/gopkg.in/yaml.v3#Marshal" target="_blank">yaml.v3 Marshal docs</a> to see how struct tags interact with the spec.</p>
+  </div>
+
+  <!-- ── Ask teacher ── -->
+  <div class="ask-teacher">
+    <strong>Questions?</strong> Ask your teacher directly — type your question in the chat. Good things to explore: <em>How do I use <code>yaml.MapSlice</code> if I need ordered keys?</em> or <em>Can a mapping key itself be a sequence or mapping?</em> or <em>What does <code>yaml:",inline"</code> do when two structs have the same key?</em>
+  </div>
+
+  <!-- ── Nav ── -->
+  <nav class="lesson-nav">
+    <a href="0001-scalars.html">← Prev: Scalars</a>
+    <a href="0003-block-scalars.html">Next: Block Scalars →</a>
+  </nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 3 — Block Scalars</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="lesson-container">
+
+  <header class="lesson-header">
+    <div class="breadcrumb">YAML Spec · Lesson 3 of ?</div>
+    <h1>Block Scalars — multi-line strings done right</h1>
+    <p class="subtitle">The two block scalar styles give you precise control over newlines in config values.</p>
+    <div class="lesson-meta">
+      <span>⏱ ~15 min</span>
+      <span>🎯 Literal |, folded &gt;, chomping indicators, indentation</span>
+    </div>
+  </header>
+
+  <!-- ── 1. Why block scalars ── -->
+  <h2>Why block scalars exist</h2>
+
+  <p>Sometimes a config value is a paragraph of text, a shell snippet, a SQL query, or an embedded template. Cramming it into a single-line double-quoted string works, but it's unreadable and brittle. Block scalars solve this cleanly:</p>
+
+  <pre><span class="cm"># Terrible — hard to read, easy to break</span>
+<span class="key">help_text</span>: <span class="str">"Run this tool with --config pointing\nto your config file.\nSee the docs for details."</span>
+
+<span class="cm"># Block literal — exactly what you want</span>
+<span class="key">help_text</span>: <span class="sym">|</span>
+  Run this tool with --config pointing
+  to your config file.
+  See the docs for details.</pre>
+
+  <p>There are two block scalar styles. They differ in one thing: what happens to newlines <em>within</em> the value.</p>
+
+  <!-- ── 2. Literal style ── -->
+  <h2>Literal style — <code>|</code></h2>
+
+  <p>The pipe <code>|</code> indicator means <strong>"preserve every newline."</strong> What you write is what you get, character for character (modulo the leading indentation, which is stripped).</p>
+
+  <pre><span class="key">sql</span>: <span class="sym">|</span>
+  SELECT id, name
+  FROM   users
+  WHERE  active = true
+  ORDER  BY name;</pre>
+
+  <p>yaml.v3 delivers this as the Go string:</p>
+
+  <pre><span class="str">"SELECT id, name\nFROM   users\nWHERE  active = true\nORDER  BY name;\n"</span></pre>
+
+  <p>Note the trailing <code>\n</code> — by default, block scalars end with exactly one newline. This is called <strong>clip chomping</strong> and is the default.</p>
+
+  <!-- ── 3. Folded style ── -->
+  <h2>Folded style — <code>&gt;</code></h2>
+
+  <p>The greater-than <code>&gt;</code> indicator means <strong>"fold single newlines into spaces."</strong> This lets you wrap long text in the config file for readability without embedding literal newlines in the value.</p>
+
+  <pre><span class="key">description</span>: <span class="sym">&gt;</span>
+  This is a long description that wraps
+  across multiple lines for readability,
+  but will be delivered as one paragraph.</pre>
+
+  <p>Go receives:</p>
+
+  <pre><span class="str">"This is a long description that wraps across multiple lines for readability, but will be delivered as one paragraph.\n"</span></pre>
+
+  <p>The folding rule has one exception: <strong>blank lines and more-indented lines are preserved.</strong> A blank line becomes a literal <code>\n</code>. A line indented further than the block's base becomes a literal newline too (useful for embedded code or lists).</p>
+
+  <pre><span class="key">notes</span>: <span class="sym">&gt;</span>
+  First paragraph, folded into
+  one line.
+
+  Second paragraph — blank line above
+  preserved as a newline.
+
+    This line is extra-indented,
+    so its newlines are kept literal.</pre>
+
+  <!-- ── 4. Chomping ── -->
+  <h2>Chomping — controlling the trailing newlines</h2>
+
+  <p>Every block scalar ends with some newlines. The <strong>chomping indicator</strong> — a character added right after <code>|</code> or <code>&gt;</code> — controls how many trailing newlines survive in the final string:</p>
+
+  <div class="diagram">|    clip (default)  — one trailing newline
+|-   strip           — zero trailing newlines
+|+   keep            — all trailing newlines preserved
+
+Same three options work with &gt;, &gt;-, and &gt;+.</div>
+
+  <pre><span class="cm"># Clip (default): one trailing \n</span>
+<span class="key">a</span>: <span class="sym">|</span>
+  hello
+
+<span class="cm"># Strip: no trailing \n — useful when the value feeds a shell command</span>
+<span class="key">b</span>: <span class="sym">|-</span>
+  hello
+
+<span class="cm"># Keep: all trailing blank lines become \n</span>
+<span class="key">c</span>: <span class="sym">|+</span>
+  hello
+
+</pre>
+
+  <div class="callout insight">
+    <div class="callout-title">When strip matters</div>
+    <p>If your Go code passes the config value directly to <code>exec.Command</code> or a template, a trailing newline is usually a bug. Use <code>|-</code> so the value is clean without requiring <code>strings.TrimSpace</code> in Go.</p>
+  </div>
+
+  <!-- ── 5. Indentation indicator ── -->
+  <h2>Explicit indentation indicator</h2>
+
+  <p>Normally YAML infers the indentation level from the first non-empty line. You can override this by appending a digit (1–9) to the block indicator — this sets the number of leading spaces that are stripped:</p>
+
+  <pre><span class="key">script</span>: <span class="sym">|2</span>
+    echo "indented by 2, not 4"</pre>
+
+  <p>This is rarely needed. The main case is when the first content line is blank (YAML can't infer indentation from a blank line) or when you need to embed content that starts with spaces you want to preserve.</p>
+
+  <p>The chomping and indentation indicators can be combined in either order: <code>|2-</code> and <code>|-2</code> are both valid.</p>
+
+  <!-- ── 6. Side by side ── -->
+  <h2>Literal vs folded — decision guide</h2>
+
+  <div class="compare">
+    <div class="compare-col">
+      <h4>Use literal <code>|</code> when</h4>
+      <ul>
+        <li>Line breaks are meaningful: shell scripts, SQL, code snippets</li>
+        <li>Embedded templates where <code>\n</code> controls rendering</li>
+        <li>The exact whitespace matters</li>
+      </ul>
+    </div>
+    <div class="compare-col">
+      <h4>Use folded <code>&gt;</code> when</h4>
+      <ul>
+        <li>The value is prose: help text, descriptions, messages</li>
+        <li>You want to wrap long strings in the config file for readability</li>
+        <li>Line breaks in the config are for the author, not the consumer</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ── 7. yaml.v3 detail ── -->
+  <h2>yaml.v3 and block scalars</h2>
+
+  <p>yaml.v3 unmarshals block scalars into Go <code>string</code> (or <code>[]byte</code>) with no special handling — the chomping and folding are resolved entirely by the parser. The Go field just receives the final string:</p>
+
+  <pre><span class="cls">type</span> <span class="fn">Config</span> <span class="cls">struct</span> {
+  <span class="fn">Script</span>      <span class="cls">string</span> <span class="str">`yaml:"script"`</span>       <span class="cm">// gets the block scalar value</span>
+  <span class="fn">Description</span> <span class="cls">string</span> <span class="str">`yaml:"description"`</span>
+}
+</pre>
+
+  <p>When <em>marshalling</em>, yaml.v3 automatically chooses block literal style for strings that contain newlines, so a round-trip preserves multi-line values correctly.</p>
+
+  <!-- ── 8. Quiz ── -->
+  <h2>Check your understanding</h2>
+
+  <div class="quiz">
+    <div class="quiz-title">Quiz 1</div>
+    <p class="quiz-question">Which block scalar indicator preserves every newline exactly as written?</p>
+    <div class="quiz-options">
+      <button class="quiz-option" data-correct="true">|  — the pipe (literal style)</button>
+      <button class="quiz-option" data-correct="false">&gt;  — the greater-than (folded style)</button>
+      <button class="quiz-option" data-correct="false">|- — the pipe-strip combination</button>
+      <button class="quiz-option" data-correct="false">|+ — the pipe-keep combination</button>
+    </div>
+    <div class="quiz-feedback"
+         data-correct="Correct. The pipe | indicator is the literal style — every newline in the source is a newline in the value. > folds single newlines into spaces."
+         data-incorrect="The pipe | is the literal style. > is the folded style — it converts single newlines to spaces, making multi-line source into a single paragraph.">
+    </div>
+  </div>
+
+  <div class="quiz">
+    <div class="quiz-title">Quiz 2</div>
+    <p class="quiz-question">You use <code>|-</code> as your block indicator. How many trailing newlines does the Go string contain?</p>
+    <div class="quiz-options">
+      <button class="quiz-option" data-correct="false">One trailing newline (clip)</button>
+      <button class="quiz-option" data-correct="true">Zero trailing newlines (strip)</button>
+      <button class="quiz-option" data-correct="false">All trailing blank lines kept</button>
+      <button class="quiz-option" data-correct="false">Depends on the content lines</button>
+    </div>
+    <div class="quiz-feedback"
+         data-correct="Correct. The - chomping indicator strips all trailing newlines. This is useful when passing the value to exec.Command or a template where a trailing newline is a bug."
+         data-incorrect="The - chomping indicator (strip) removes all trailing newlines. | alone (clip) gives one trailing newline. |+ (keep) preserves however many blank lines follow.">
+    </div>
+  </div>
+
+  <div class="quiz">
+    <div class="quiz-title">Quiz 3</div>
+    <p class="quiz-question">Using folded style <code>&gt;</code>, when does a newline in the source become a literal <code>\n</code> (not folded to a space)?</p>
+    <div class="quiz-options">
+      <button class="quiz-option" data-correct="true">After a blank line or on a more-indented line</button>
+      <button class="quiz-option" data-correct="false">After every line ending with punctuation</button>
+      <button class="quiz-option" data-correct="false">Only when using the keep chomping modifier</button>
+      <button class="quiz-option" data-correct="false">Never — all newlines are folded to spaces</button>
+    </div>
+    <div class="quiz-feedback"
+         data-correct="Correct. Blank lines and lines indented more than the base level are never folded — their newlines survive. This lets you embed paragraphs and code within a folded block."
+         data-incorrect="Folded style preserves newlines after blank lines and on extra-indented lines. Regular consecutive lines get their newlines replaced by spaces.">
+    </div>
+  </div>
+
+  <!-- ── Primary source ── -->
+  <div class="primary-source">
+    <div class="primary-source-label">Primary source for this lesson</div>
+    <p><a href="https://yaml.org/spec/1.2.2/#chapter-8-block-style-productions" target="_blank">YAML 1.2.2 Specification — §8.1: Block Scalar Styles</a> — §8.1.1 covers block scalar headers (chomping and indentation indicators), §8.1.2 the literal style, §8.1.3 the folded style. The <a href="https://yaml-multiline.info/" target="_blank">yaml-multiline.info</a> interactive tool lets you try every combination instantly.</p>
+  </div>
+
+  <!-- ── Ask teacher ── -->
+  <div class="ask-teacher">
+    <strong>Questions?</strong> Ask your teacher directly — type your question in the chat. Good things to explore: <em>What happens if I embed a block scalar inside a flow mapping?</em> or <em>Can I use block scalars as mapping keys?</em> or <em>How does yaml.v3 choose between block and flow style when marshalling?</em>
+  </div>
+
+  <!-- ── Nav ── -->
+  <nav class="lesson-nav">
+    <a href="0002-sequences-and-mappings.html">← Prev: Sequences &amp; Mappings</a>
+    <a href="0004-anchors-and-aliases.html">Next: Anchors &amp; Aliases →</a>
+  </nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

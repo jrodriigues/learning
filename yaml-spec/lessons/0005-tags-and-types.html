@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 5 — Tags &amp; Explicit Types</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="lesson-container">
+
+  <header class="lesson-header">
+    <div class="breadcrumb">YAML Spec · Lesson 5 of ?</div>
+    <h1>Tags &amp; Explicit Types</h1>
+    <p class="subtitle">Override implicit typing. Make YAML say exactly what you mean.</p>
+    <div class="lesson-meta">
+      <span>⏱ ~15 min</span>
+      <span>🎯 !!str, !!int, !!bool, !!map, !!seq, custom tags, yaml.v3 tag dispatch</span>
+    </div>
+  </header>
+
+  <!-- ── 1. The problem ── -->
+  <h2>Why tags exist</h2>
+
+  <p>In <a href="0001-scalars.html">Lesson 1</a> you saw that YAML resolves types implicitly: the unquoted scalar <code>true</code> becomes a boolean, <code>42</code> becomes an integer, and so on. Tags are YAML's escape hatch — they let you assert the type of any node explicitly, overriding implicit resolution entirely.</p>
+
+  <p>You've already used one implicit tag every time you quoted a value. <code>"42"</code> works because the double-quote style carries an implicit <code>!!str</code> tag. Explicit tags just make this visible:</p>
+
+  <pre><span class="key">port</span>:    <span class="tag">!!str</span> <span class="num">5432</span>   <span class="cm"># integer literal, forced to string "5432"</span>
+<span class="key">enabled</span>: <span class="tag">!!str</span> <span class="kw">true</span>   <span class="cm"># boolean literal, forced to string "true"</span>
+<span class="key">ratio</span>:   <span class="tag">!!int</span> <span class="str">"8"</span>    <span class="cm"># quoted string, forced to integer 8</span></pre>
+
+  <!-- ── 2. Tag syntax ── -->
+  <h2>Tag syntax</h2>
+
+  <p>A tag is written immediately before the node it annotates, separated by a space:</p>
+
+  <div class="diagram">!&lt;tag-uri&gt;    full URI form    — !&lt;tag:yaml.org,2002:str&gt;
+!!shorthand   core schema      — !!str, !!int, !!float, !!bool, !!null
+!local        local tag        — !MyType  (application-defined)</div>
+
+  <p>The <code>!!</code> prefix is shorthand for the standard YAML tag namespace <code>tag:yaml.org,2002:</code>. In practice you will see <code>!!</code> tags almost exclusively — the full URI form is only needed when writing a YAML parser or schema tool.</p>
+
+  <!-- ── 3. Core schema tags ── -->
+  <h2>The core schema tags</h2>
+
+  <p>These are the tags defined by the YAML 1.2 Core Schema. yaml.v3 recognises all of them:</p>
+
+  <div class="diagram">!!str      string     — any scalar value
+!!int      integer    — decimal, hex (0x), octal (0o)
+!!float    float      — decimal, scientific, .inf, .nan
+!!bool     boolean    — true / false only (YAML 1.2)
+!!null     null       — null, ~, or empty value
+!!seq      sequence   — a YAML sequence (list)
+!!map      mapping    — a YAML mapping (object)</div>
+
+  <pre><span class="cm"># Forcing types that would otherwise be ambiguous</span>
+<span class="key">version</span>:    <span class="tag">!!str</span>   <span class="num">1.0</span>      <span class="cm"># float→string: "1.0" not 1.0</span>
+<span class="key">country</span>:    <span class="tag">!!str</span>   <span class="kw">NO</span>       <span class="cm"># bool→string: "NO" not false</span>
+<span class="key">zip_code</span>:   <span class="tag">!!str</span>   <span class="num">07030</span>    <span class="cm"># octal→string: "07030" not 3608</span>
+<span class="key">user_count</span>: <span class="tag">!!int</span>   <span class="str">"1_000"</span>  <span class="cm"># quoted string→integer 1000</span></pre>
+
+  <div class="callout insight">
+    <div class="callout-title">Tags vs quoting for strings</div>
+    <p>Quoting and <code>!!str</code> are equivalent for scalar strings — both force the value to be a string. Quoting is idiomatic YAML; <code>!!str</code> is explicit and self-documenting when the type ambiguity is the point. Use tags when you want the config file to communicate intent (<em>"this is deliberately a string"</em>), quoting when it's just a syntax convenience.</p>
+  </div>
+
+  <!-- ── 4. Tags on collections ── -->
+  <h2>Tags on collections</h2>
+
+  <p>Tags can annotate sequences and mappings too, though this is less common in config files:</p>
+
+  <pre><span class="key">matrix</span>: <span class="tag">!!seq</span>
+  <span class="sym">-</span> <span class="tag">!!seq</span> <span class="sym">[</span><span class="num">1</span><span class="sym">,</span> <span class="num">0</span><span class="sym">]</span>
+  <span class="sym">-</span> <span class="tag">!!seq</span> <span class="sym">[</span><span class="num">0</span><span class="sym">,</span> <span class="num">1</span><span class="sym">]</span>
+
+<span class="key">metadata</span>: <span class="tag">!!map</span>
+  <span class="key">created</span>: <span class="val">2024-01-15</span>
+  <span class="key">author</span>:  <span class="val">jrodr</span></pre>
+
+  <p>The explicit <code>!!seq</code> and <code>!!map</code> tags add no information that YAML wouldn't infer anyway — they're useful mainly for clarity in generated YAML or when a custom schema reassigns meaning to a tag.</p>
+
+  <!-- ── 5. Local/custom tags ── -->
+  <h2>Custom and local tags</h2>
+
+  <p>A single <code>!</code> prefix introduces a <em>local tag</em> — an application-defined type hint. The YAML parser preserves the tag string; your application code decides what it means:</p>
+
+  <pre><span class="key">credential</span>: <span class="tag">!vault</span> <span class="val">secret/myapp/db-password</span>
+<span class="key">duration</span>:   <span class="tag">!duration</span> <span class="str">"5m30s"</span>
+<span class="key">regexp</span>:     <span class="tag">!regexp</span>  <span class="str">"^[a-z]+$"</span></pre>
+
+  <p>YAML itself doesn't know what <code>!vault</code> means. Your Go code must handle it via a custom <strong>Unmarshaler</strong>.</p>
+
+  <!-- ── 6. yaml.v3 tag dispatch ── -->
+  <h2>How yaml.v3 handles tags</h2>
+
+  <h3>Reading the tag with <code>yaml.Node</code></h3>
+
+  <p>To inspect or act on tags in Go, unmarshal into a <code>yaml.Node</code> tree instead of a concrete struct. Each <code>Node</code> carries a <code>Tag</code> field with the resolved tag string:</p>
+
+  <pre><span class="cls">var</span> <span class="fn">root</span> yaml.<span class="fn">Node</span>
+yaml.<span class="fn">Unmarshal</span>(data, &amp;<span class="fn">root</span>)
+<span class="cm">// root.Content[0] is the document node
+// root.Content[0].Tag == "!!map", "!!str", "!vault", etc.</span></pre>
+
+  <h3>Custom Unmarshaler for local tags</h3>
+
+  <p>Implement <code>yaml.Unmarshaler</code> on your type to intercept the raw node and inspect its tag:</p>
+
+  <pre><span class="cls">type</span> <span class="fn">VaultRef</span> <span class="cls">struct</span> { <span class="fn">Path</span> <span class="cls">string</span> }
+
+<span class="cls">func</span> (v *<span class="fn">VaultRef</span>) <span class="fn">UnmarshalYAML</span>(value *yaml.<span class="fn">Node</span>) <span class="cls">error</span> {
+  <span class="kw">if</span> value.<span class="fn">Tag</span> != <span class="str">"!vault"</span> {
+    <span class="kw">return</span> fmt.<span class="fn">Errorf</span>(<span class="str">"expected !vault tag, got %s"</span>, value.<span class="fn">Tag</span>)
+  }
+  v.<span class="fn">Path</span> = value.<span class="fn">Value</span>
+  <span class="kw">return</span> <span class="kw">nil</span>
+}</pre>
+
+  <div class="callout gotcha">
+    <div class="callout-title">yaml.v3 normalises !! tags</div>
+    <p>When you read a node's <code>Tag</code> field, yaml.v3 returns the expanded form: <code>!!str</code> becomes <code>"!!str"</code>, not <code>"tag:yaml.org,2002:str"</code>. Local tags (<code>!vault</code>) are returned as-is with the single <code>!</code>. Keep this in mind when comparing tag strings in a custom Unmarshaler.</p>
+  </div>
+
+  <h3>Ignoring unknown tags</h3>
+  <p>If a local tag appears on a node that yaml.v3 can unmarshal into your struct field type, it does so and ignores the tag. The tag only matters if you write an Unmarshaler that inspects it. This means <code>!vault secret/path</code> unmarshals to the string <code>"secret/path"</code> in a plain <code>string</code> field — the tag is silently discarded.</p>
+
+  <!-- ── 7. Practical guidance ── -->
+  <h2>Tags in practice for Go CLI configs</h2>
+
+  <ul>
+    <li>Use <strong>quoting</strong> rather than <code>!!str</code> for the common cases (version strings, country codes, zip codes). It's cleaner and idiomatic.</li>
+    <li>Use <strong><code>!!str</code> explicitly</strong> only when the config file is generated by a tool and you want to be defensive about ambiguous values.</li>
+    <li>Use <strong>local tags</strong> (<code>!vault</code>, <code>!duration</code>, <code>!regexp</code>) when you want config values to carry type-level semantics that Go code must enforce — and implement a matching Unmarshaler.</li>
+    <li>Avoid <strong><code>!!seq</code> and <code>!!map</code></strong> on block collections — they add noise without meaning in normal config files.</li>
+  </ul>
+
+  <!-- ── 8. Quiz ── -->
+  <h2>Check your understanding</h2>
+
+  <div class="quiz">
+    <div class="quiz-title">Quiz 1</div>
+    <p class="quiz-question">What does the tag <code>!!str</code> expand to in full URI form?</p>
+    <div class="quiz-options">
+      <button class="quiz-option" data-correct="true">tag:yaml.org,2002:str</button>
+      <button class="quiz-option" data-correct="false">tag:yaml.org,1.2:str</button>
+      <button class="quiz-option" data-correct="false">http://yaml.org/type/str</button>
+      <button class="quiz-option" data-correct="false">urn:yaml:core:str</button>
+    </div>
+    <div class="quiz-feedback"
+         data-correct="Correct. The !! shorthand expands to tag:yaml.org,2002: — the year 2002 is part of the namespace, not a version number."
+         data-incorrect="The !! shorthand is short for tag:yaml.org,2002: (the namespace year is 2002). So !!str = tag:yaml.org,2002:str.">
+    </div>
+  </div>
+
+  <div class="quiz">
+    <div class="quiz-title">Quiz 2</div>
+    <p class="quiz-question">A Go struct field is <code>Password string</code>. The config has <code>password: !vault secret/db</code>. What value does yaml.v3 give the field — assuming no custom Unmarshaler?</p>
+    <div class="quiz-options">
+      <button class="quiz-option" data-correct="true">"secret/db"  — tag silently ignored</button>
+      <button class="quiz-option" data-correct="false">""           — unknown tag, zero value</button>
+      <button class="quiz-option" data-correct="false">parse error  — unrecognised tag</button>
+      <button class="quiz-option" data-correct="false">"!vault"     — tag string as value</button>
+    </div>
+    <div class="quiz-feedback"
+         data-correct="Correct. Without a custom Unmarshaler, yaml.v3 ignores local tags and unmarshals the scalar value as usual. The tag is discarded silently."
+         data-incorrect="yaml.v3 ignores unrecognised tags on nodes it can otherwise unmarshal. The string value secret/db is assigned; the !vault tag is discarded. To act on it, implement yaml.Unmarshaler.">
+    </div>
+  </div>
+
+  <div class="quiz">
+    <div class="quiz-title">Quiz 3</div>
+    <p class="quiz-question">You unmarshal into a <code>yaml.Node</code> and check <code>node.Tag</code> for a value written as <code>!!str</code>. What string does <code>node.Tag</code> contain?</p>
+    <div class="quiz-options">
+      <button class="quiz-option" data-correct="true">"!!str"</button>
+      <button class="quiz-option" data-correct="false">"tag:yaml.org,2002:str"</button>
+      <button class="quiz-option" data-correct="false">"str"</button>
+      <button class="quiz-option" data-correct="false">"!str"</button>
+    </div>
+    <div class="quiz-feedback"
+         data-correct='Correct. yaml.v3 returns the shorthand form "!!str" in node.Tag, not the full URI. Compare against "!!str", "!!int" etc. when inspecting nodes.'
+         data-incorrect='yaml.v3 stores the shorthand in node.Tag: "!!str", not the expanded URI. This is a practical detail — always compare against the shorthand form in custom Unmarshalers.'>
+    </div>
+  </div>
+
+  <!-- ── Primary source ── -->
+  <div class="primary-source">
+    <div class="primary-source-label">Primary source for this lesson</div>
+    <p><a href="https://yaml.org/spec/1.2.2/#chapter-6-basic-structures" target="_blank">YAML 1.2.2 Specification — §6.8: Tags</a> defines tag syntax and the <code>!!</code> shorthand. The Core Schema tags are listed in <a href="https://yaml.org/spec/1.2.2/#chapter-10-recommended-schemas" target="_blank">§10.3</a>. For custom Unmarshalers in Go see the <a href="https://pkg.go.dev/gopkg.in/yaml.v3#Unmarshaler" target="_blank">yaml.v3 Unmarshaler interface docs</a>.</p>
+  </div>
+
+  <!-- ── Ask teacher ── -->
+  <div class="ask-teacher">
+    <strong>Questions?</strong> Ask your teacher directly — type your question in the chat. Good things to explore: <em>Can I define a tag directive at the top of the document to alias long tag URIs?</em> or <em>How do I make yaml.v3 error on an unexpected tag rather than silently ignoring it?</em> or <em>When would I use <code>yaml.Node</code> vs a typed struct for unmarshalling?</em>
+  </div>
+
+  <!-- ── Nav ── -->
+  <nav class="lesson-nav">
+    <a href="0004-anchors-and-aliases.html">← Prev: Anchors &amp; Aliases</a>
+    <a href="0006-documents-and-streams.html">Next: Documents &amp; Streams →</a>
+  </nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

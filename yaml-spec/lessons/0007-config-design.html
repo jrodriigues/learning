@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 7 — Putting It Together</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="lesson-container">
+
+  <header class="lesson-header">
+    <div class="breadcrumb">YAML Spec · Lesson 7 of ?</div>
+    <h1>Putting It Together — deliberate config design</h1>
+    <p class="subtitle">Build a real Go CLI config file. Every choice justified. No accidents.</p>
+    <div class="lesson-meta">
+      <span>⏱ ~20 min</span>
+      <span>🎯 Synthesis: block scalars + anchors + tags + strict loader in one config</span>
+    </div>
+  </header>
+
+  <!-- ── 1. The brief ── -->
+  <h2>The brief</h2>
+
+  <p>You're designing the config file for a Go CLI tool called <code>syncd</code> — a data-sync daemon that reads from a primary database, writes to a replica, ships logs to a file, and supports optional plugins. The config needs to be:</p>
+
+  <ul>
+    <li><strong>DRY</strong> — database connection defaults shared, not duplicated</li>
+    <li><strong>Safe</strong> — no implicit type surprises; ambiguous values are explicit</li>
+    <li><strong>Readable</strong> — multi-line values are block scalars, not escaped strings</li>
+    <li><strong>Strict</strong> — the loader rejects unknown keys and extra documents</li>
+  </ul>
+
+  <p>We'll build the config file first, then the matching Go structs and loader. Every feature used is deliberate.</p>
+
+  <!-- ── 2. The config file ── -->
+  <h2>The config file</h2>
+
+  <pre><span class="sym">---</span>   <span class="cm"># explicit document start — signals "this is YAML" to readers</span>
+
+<span class="cm"># ── Anchor-only defaults block ──────────────────────────────────────────
+# Keys prefixed with _ are never read by Go (unknown keys ignored by default).
+# Their sole job is to be merged elsewhere.
+</span><span class="key">_defaults</span>:
+  <span class="key">db</span>: <span class="anc">&amp;db-defaults</span>
+    <span class="key">port</span>:            <span class="num">5432</span>
+    <span class="key">connect_timeout</span>: <span class="num">5</span>
+    <span class="key">read_timeout</span>:    <span class="num">30</span>
+    <span class="key">ssl</span>:             <span class="kw">true</span>
+
+<span class="cm"># ── App ─────────────────────────────────────────────────────────────────</span>
+<span class="key">app</span>:
+  <span class="key">name</span>:    <span class="val">syncd</span>
+  <span class="key">version</span>: <span class="tag">!!str</span> <span class="num">1.0</span>   <span class="cm"># !!str: 1.0 would be a float without this</span>
+
+<span class="cm"># ── Databases ───────────────────────────────────────────────────────────</span>
+<span class="key">primary</span>:
+  <span class="sym">&lt;&lt;</span>: <span class="anc">*db-defaults</span>      <span class="cm"># inherit port, timeouts, ssl</span>
+  <span class="key">host</span>: <span class="val">db-primary.internal</span>
+  <span class="key">name</span>: <span class="val">syncd_prod</span>
+  <span class="key">password</span>: <span class="tag">!vault</span> <span class="val">secret/syncd/primary-password</span>
+
+<span class="key">replica</span>:
+  <span class="sym">&lt;&lt;</span>: <span class="anc">*db-defaults</span>      <span class="cm"># same defaults, different host</span>
+  <span class="key">host</span>: <span class="val">db-replica.internal</span>
+  <span class="key">name</span>: <span class="val">syncd_prod</span>
+  <span class="key">ssl</span>:  <span class="kw">false</span>             <span class="cm"># override: replica uses plain connection</span>
+  <span class="key">password</span>: <span class="tag">!vault</span> <span class="val">secret/syncd/replica-password</span>
+
+<span class="cm"># ── Log ─────────────────────────────────────────────────────────────────</span>
+<span class="key">log</span>:
+  <span class="key">level</span>:   <span class="val">info</span>
+  <span class="key">outputs</span>: <span class="sym">[</span><span class="val">stdout</span><span class="sym">,</span> <span class="str">/var/log/syncd.log</span><span class="sym">]</span>   <span class="cm"># flow: short flat list of scalars</span>
+  <span class="key">format</span>: <span class="sym">|-</span>                              <span class="cm"># strip: no trailing \n (feeds a template)</span>
+    {{.Time}} {{.Level}} {{.Msg}}
+    {{- if .Fields}} {{.Fields}}{{end}}
+
+<span class="cm"># ── Plugins ─────────────────────────────────────────────────────────────</span>
+<span class="key">plugins</span>:
+  <span class="sym">-</span> <span class="key">name</span>:    <span class="val">audit</span>
+    <span class="key">enabled</span>: <span class="kw">true</span>
+    <span class="key">config</span>:
+      <span class="key">retain_days</span>: <span class="num">90</span>
+  <span class="sym">-</span> <span class="key">name</span>:    <span class="val">cache</span>
+    <span class="key">enabled</span>: <span class="kw">false</span></pre>
+
+  <h3>Every choice annotated</h3>
+
+  <div class="diagram">!!str 1.0        — 1.0 is a valid float; !!str forces "1.0" as a string
+&amp;db-defaults     — DRY: port/timeouts/ssl defined once, merged into primary &amp; replica
+&lt;&lt;: *db-defaults — merge key pulls in defaults; explicit keys (ssl: false) override
+!vault           — local tag signals "resolve this via Vault, not a plain string"
+[stdout, ...]    — flow sequence: short, homogeneous, reads naturally inline
+|-               — strip chomping: format string feeds a Go template; trailing \n is a bug
+sequence of maps — plugins are ordered and named; a mapping would lose order</div>
+
+  <!-- ── 3. Go structs ── -->
+  <h2>The matching Go structs</h2>
+
+  <pre><span class="cls">type</span> <span class="fn">Config</span> <span class="cls">struct</span> {
+  <span class="fn">App</span>     <span class="fn">AppConfig</span>      <span class="str">`yaml:"app"`</span>
+  <span class="fn">Primary</span> <span class="fn">DBConfig</span>       <span class="str">`yaml:"primary"`</span>
+  <span class="fn">Replica</span> <span class="fn">DBConfig</span>       <span class="str">`yaml:"replica"`</span>
+  <span class="fn">Log</span>     <span class="fn">LogConfig</span>      <span class="str">`yaml:"log"`</span>
+  <span class="fn">Plugins</span> []<span class="fn">PluginConfig</span> <span class="str">`yaml:"plugins"`</span>
+}
+
+<span class="cls">type</span> <span class="fn">AppConfig</span> <span class="cls">struct</span> {
+  <span class="fn">Name</span>    <span class="cls">string</span> <span class="str">`yaml:"name"`</span>
+  <span class="fn">Version</span> <span class="cls">string</span> <span class="str">`yaml:"version"`</span>  <span class="cm">// !!str in YAML → string here, safe</span>
+}
+
+<span class="cls">type</span> <span class="fn">DBConfig</span> <span class="cls">struct</span> {
+  <span class="fn">Host</span>           <span class="cls">string</span>   <span class="str">`yaml:"host"`</span>
+  <span class="fn">Port</span>           <span class="cls">int</span>      <span class="str">`yaml:"port"`</span>
+  <span class="fn">Name</span>           <span class="cls">string</span>   <span class="str">`yaml:"name"`</span>
+  <span class="fn">SSL</span>            <span class="cls">bool</span>     <span class="str">`yaml:"ssl"`</span>
+  <span class="fn">ConnectTimeout</span> <span class="cls">int</span>      <span class="str">`yaml:"connect_timeout"`</span>
+  <span class="fn">ReadTimeout</span>    <span class="cls">int</span>      <span class="str">`yaml:"read_timeout"`</span>
+  <span class="fn">Password</span>       <span class="fn">VaultRef</span> <span class="str">`yaml:"password"`</span>
+}
+
+<span class="cls">type</span> <span class="fn">VaultRef</span> <span class="cls">struct</span> { <span class="fn">Path</span> <span class="cls">string</span> }
+
+<span class="cls">func</span> (v *<span class="fn">VaultRef</span>) <span class="fn">UnmarshalYAML</span>(node *yaml.<span class="fn">Node</span>) <span class="cls">error</span> {
+  <span class="kw">if</span> node.<span class="fn">Tag</span> != <span class="str">"!vault"</span> {
+    <span class="kw">return</span> fmt.<span class="fn">Errorf</span>(<span class="str">"password must use !vault tag, got %s"</span>, node.<span class="fn">Tag</span>)
+  }
+  v.<span class="fn">Path</span> = node.<span class="fn">Value</span>
+  <span class="kw">return</span> <span class="kw">nil</span>
+}
+
+<span class="cls">type</span> <span class="fn">LogConfig</span> <span class="cls">struct</span> {
+  <span class="fn">Level</span>   <span class="cls">string</span>   <span class="str">`yaml:"level"`</span>
+  <span class="fn">Outputs</span> []<span class="cls">string</span> <span class="str">`yaml:"outputs"`</span>
+  <span class="fn">Format</span>  <span class="cls">string</span>   <span class="str">`yaml:"format"`</span>  <span class="cm">// |- in YAML → no trailing \n, ready for template</span>
+}
+
+<span class="cls">type</span> <span class="fn">PluginConfig</span> <span class="cls">struct</span> {
+  <span class="fn">Name</span>    <span class="cls">string</span>                 <span class="str">`yaml:"name"`</span>
+  <span class="fn">Enabled</span> <span class="cls">bool</span>                   <span class="str">`yaml:"enabled"`</span>
+  <span class="fn">Config</span>  <span class="cls">map</span>[<span class="cls">string</span>]<span class="cls">interface</span>{} <span class="str">`yaml:"config,omitempty"`</span>
+}</pre>
+
+  <!-- ── 4. The loader ── -->
+  <h2>The strict config loader</h2>
+
+  <pre><span class="cls">func</span> <span class="fn">Load</span>(path <span class="cls">string</span>) (*<span class="fn">Config</span>, <span class="cls">error</span>) {
+  f, err := os.<span class="fn">Open</span>(path)
+  <span class="kw">if</span> err != <span class="kw">nil</span> {
+    <span class="kw">return</span> <span class="kw">nil</span>, err
+  }
+  <span class="kw">defer</span> f.<span class="fn">Close</span>()
+
+  dec := yaml.<span class="fn">NewDecoder</span>(f)
+  dec.<span class="fn">KnownFields</span>(<span class="kw">true</span>)   <span class="cm">// reject unknown keys</span>
+
+  <span class="cls">var</span> cfg <span class="fn">Config</span>
+  <span class="kw">if</span> err := dec.<span class="fn">Decode</span>(&amp;cfg); err != <span class="kw">nil</span> {
+    <span class="kw">return</span> <span class="kw">nil</span>, fmt.<span class="fn">Errorf</span>(<span class="str">"parse error: %w"</span>, err)
+  }
+
+  <span class="cm">// Enforce single-document stream</span>
+  <span class="cls">var</span> extra yaml.<span class="fn">Node</span>
+  <span class="kw">if</span> err := dec.<span class="fn">Decode</span>(&amp;extra); !errors.<span class="fn">Is</span>(err, io.<span class="fn">EOF</span>) {
+    <span class="kw">return</span> <span class="kw">nil</span>, fmt.<span class="fn">Errorf</span>(<span class="str">"config must contain exactly one YAML document"</span>)
+  }
+
+  <span class="kw">return</span> &amp;cfg, <span class="kw">nil</span>
+}</pre>
+
+  <div class="callout warning">
+    <div class="callout-title">KnownFields and _defaults</div>
+    <p><code>KnownFields(true)</code> will reject the <code>_defaults</code> key because <code>Config</code> has no such field. Two fixes: (1) add <code>Defaults interface{} \`yaml:"_defaults"\`</code> as a discard field, or (2) move anchor definitions into a separate file that is never parsed by your Go loader and use a pre-processing step to concatenate it. The simplest production choice is option 1.</p>
+  </div>
+
+  <!-- ── 5. The complete picture ── -->
+  <h2>The complete picture</h2>
+
+  <p>Here is how each YAML feature maps to a Go concern in this config:</p>
+
+  <div class="diagram">YAML feature          Go concern
+─────────────────     ────────────────────────────────────
+!!str 1.0             Guarantees Version is a string, not float64
+&amp;db-defaults / &lt;&lt;    DRY — one source of truth for shared DB settings
+!vault                Typed credential — VaultRef, not plain string
+|- (strip)            No trailing \n — format string is template-ready
+[a, b] flow seq       Readable inline — short flat list of output paths
+sequence of mappings  Plugin order is defined and stable
+yaml.Decoder          Safe multi-doc detection — no silent truncation
+KnownFields(true)     Typos in key names become load errors, not silent misses</div>
+
+  <!-- ── 6. Quiz ── -->
+  <h2>Check your understanding</h2>
+
+  <div class="quiz">
+    <div class="quiz-title">Quiz 1</div>
+    <p class="quiz-question">The config contains <code>retries: 03</code>. What value does yaml.v3 assign, and how do you fix it?</p>
+    <div class="quiz-options">
+      <button class="quiz-option" data-correct="false">integer 3 — no fix needed, leading zero is decorative</button>
+      <button class="quiz-option" data-correct="true">integer 3 via octal — fix with retries: 3 or "03"</button>
+      <button class="quiz-option" data-correct="false">string "03" — leading zero forces string type</button>
+      <button class="quiz-option" data-correct="false">parse error — ambiguous octal literal rejected</button>
+    </div>
+    <div class="quiz-feedback"
+         data-correct="Correct. 03 is parsed as octal 3 (= decimal 3 here, but 07 would be 7, and 010 would be 8 — the real trap). Use a bare 3 for decimal, or quote it if the string &quot;03&quot; is what you mean."
+         data-incorrect="yaml.v3 (YAML 1.1 rules) treats a leading zero as octal. 03 octal = 3 decimal, which happens to be harmless — but 010 = 8, not 10. Use bare integers without leading zeros.">
+    </div>
+  </div>
+
+  <div class="quiz">
+    <div class="quiz-title">Quiz 2</div>
+    <p class="quiz-question">The log format string must feed a Go template with no trailing newline. Which block scalar indicator is correct?</p>
+    <div class="quiz-options">
+      <button class="quiz-option" data-correct="false">|  — clip, one trailing newline kept</button>
+      <button class="quiz-option" data-correct="true">|- — strip, zero trailing newlines</button>
+      <button class="quiz-option" data-correct="false">|+ — keep, all trailing newlines kept</button>
+      <button class="quiz-option" data-correct="false">&gt;- — folded strip, newlines become spaces</button>
+    </div>
+    <div class="quiz-feedback"
+         data-correct="Correct. |- (literal strip) gives you the exact text with no trailing newline — safe to pass directly to template.New().Parse() without strings.TrimSpace."
+         data-incorrect="|- is the strip variant of literal style: preserves every internal newline but removes all trailing ones. |  (clip) would leave a trailing newline that silently corrupts template output.">
+    </div>
+  </div>
+
+  <div class="quiz">
+    <div class="quiz-title">Quiz 3</div>
+    <p class="quiz-question">A teammate sets <code>password: secret123</code> instead of <code>password: !vault secret/path</code>. With the loader above, what happens?</p>
+    <div class="quiz-options">
+      <button class="quiz-option" data-correct="false">It loads fine — VaultRef.Path is set to "secret123"</button>
+      <button class="quiz-option" data-correct="false">KnownFields rejects it — unknown key "password"</button>
+      <button class="quiz-option" data-correct="true">UnmarshalYAML returns an error — tag is !!str not !vault</button>
+      <button class="quiz-option" data-correct="false">It panics — nil pointer in VaultRef.UnmarshalYAML</button>
+    </div>
+    <div class="quiz-feedback"
+         data-correct="Correct. VaultRef.UnmarshalYAML checks node.Tag == &quot;!vault&quot; and returns an error if not. Plain strings carry tag !!str, so the load fails with a clear message — the schema enforces the credential pattern."
+         data-incorrect="VaultRef implements yaml.Unmarshaler and checks node.Tag. A plain string has tag !!str, not !vault, so the custom unmarshaler returns an error. This is exactly the value of the local tag pattern.">
+    </div>
+  </div>
+
+  <!-- ── Primary source ── -->
+  <div class="primary-source">
+    <div class="primary-source-label">Primary sources for this lesson</div>
+    <p>This lesson synthesises the full spec. Key references: <a href="https://yaml.org/spec/1.2.2/" target="_blank">YAML 1.2.2 Specification</a> (the authoritative source for everything covered in this course), <a href="https://pkg.go.dev/gopkg.in/yaml.v3" target="_blank">gopkg.in/yaml.v3 GoDoc</a> (Decoder, KnownFields, Unmarshaler interface), and <a href="https://yaml-multiline.info/" target="_blank">yaml-multiline.info</a> (block scalar quick-reference).</p>
+  </div>
+
+  <!-- ── Ask teacher ── -->
+  <div class="ask-teacher">
+    <strong>Questions?</strong> Ask your teacher directly — type your question in the chat. Good things to explore: <em>How should I validate required fields after loading (e.g. host must not be empty)?</em> or <em>What's the best way to support config file overrides from environment variables?</em> or <em>Should I version the config file schema, and how?</em>
+  </div>
+
+  <!-- ── Nav ── -->
+  <nav class="lesson-nav">
+    <a href="0006-documents-and-streams.html">← Prev: Documents &amp; Streams</a>
+    <span></span>
+  </nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

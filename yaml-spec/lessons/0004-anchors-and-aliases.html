@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 4 — Anchors &amp; Aliases</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="lesson-container">
+
+  <header class="lesson-header">
+    <div class="breadcrumb">YAML Spec · Lesson 4 of ?</div>
+    <h1>Anchors &amp; Aliases — DRY config files</h1>
+    <p class="subtitle">Define a value once, reference it anywhere. The YAML answer to copy-paste configs.</p>
+    <div class="lesson-meta">
+      <span>⏱ ~15 min</span>
+      <span>🎯 &amp;anchor, *alias, merge key &lt;&lt;, yaml.v3 behaviour</span>
+    </div>
+  </header>
+
+  <!-- ── 1. The problem ── -->
+  <h2>The problem anchors solve</h2>
+
+  <p>Config files often repeat the same values — database credentials shared across environments, a TLS config used by multiple services, a standard set of log fields. Without anchors, you copy-paste and they drift:</p>
+
+  <pre><span class="cm"># Without anchors — same timeout repeated three times</span>
+<span class="key">http</span>:
+  <span class="key">connect_timeout</span>: <span class="num">5</span>
+  <span class="key">read_timeout</span>:    <span class="num">30</span>
+<span class="key">grpc</span>:
+  <span class="key">connect_timeout</span>: <span class="num">5</span>
+  <span class="key">read_timeout</span>:    <span class="num">30</span>
+<span class="key">ws</span>:
+  <span class="key">connect_timeout</span>: <span class="num">5</span>
+  <span class="key">read_timeout</span>:    <span class="num">30</span></pre>
+
+  <p>Anchors let you name a node once and reference it everywhere else — the parser substitutes the value at load time, before your Go code ever sees it.</p>
+
+  <!-- ── 2. Anchor syntax ── -->
+  <h2>Anchors — <code>&amp;name</code></h2>
+
+  <p>An <strong>anchor</strong> is placed before the value it names, using an ampersand followed by an identifier:</p>
+
+  <pre><span class="key">defaults</span>:
+  <span class="key">connect_timeout</span>: <span class="anc">&amp;ct</span> <span class="num">5</span>
+  <span class="key">read_timeout</span>:    <span class="anc">&amp;rt</span> <span class="num">30</span></pre>
+
+  <p>The anchor name (<code>ct</code>, <code>rt</code>) is scoped to the document. It can be any non-space string that doesn't contain <code>[</code>, <code>]</code>, <code>{</code>, <code>}</code>, or <code>,</code>. Conventional names use lowercase and hyphens.</p>
+
+  <p>Anchors can be placed on scalars, sequences, or entire mappings:</p>
+
+  <pre><span class="key">tls_config</span>: <span class="anc">&amp;tls</span>
+  <span class="key">cert</span>: <span class="val">cert.pem</span>
+  <span class="key">key</span>:  <span class="val">key.pem</span>
+  <span class="key">ca</span>:   <span class="val">ca.pem</span></pre>
+
+  <!-- ── 3. Alias syntax ── -->
+  <h2>Aliases — <code>*name</code></h2>
+
+  <p>An <strong>alias</strong> references an anchor, using an asterisk:</p>
+
+  <pre><span class="key">http</span>:
+  <span class="key">connect_timeout</span>: <span class="anc">*ct</span>
+  <span class="key">read_timeout</span>:    <span class="anc">*rt</span>
+<span class="key">grpc</span>:
+  <span class="key">connect_timeout</span>: <span class="anc">*ct</span>
+  <span class="key">read_timeout</span>:    <span class="anc">*rt</span></pre>
+
+  <p>The alias expands to an exact copy of the anchored node. Change the anchor, all aliases update. The YAML parser handles this — Go never sees anchors or aliases, only the resolved values.</p>
+
+  <div class="callout info">
+    <div class="callout-title">Anchors are resolved before Go sees the document</div>
+    <p>yaml.v3 resolves anchors and aliases during parsing. Your Go structs and maps receive fully expanded values — there is no <code>Anchor</code> or <code>Alias</code> field in the unmarshalled result unless you unmarshal into a <code>yaml.Node</code> tree and inspect it manually.</p>
+  </div>
+
+  <!-- ── 4. Merge key ── -->
+  <h2>The merge key — <code>&lt;&lt;</code></h2>
+
+  <p>Aliases on scalar values are useful, but the real power is <strong>merging mappings</strong>. The special key <code>&lt;&lt;</code> (two less-than signs) merges the keys from an aliased mapping into the current mapping:</p>
+
+  <pre><span class="key">base_db</span>: <span class="anc">&amp;base-db</span>
+  <span class="key">host</span>:    <span class="val">localhost</span>
+  <span class="key">port</span>:    <span class="num">5432</span>
+  <span class="key">ssl</span>:     <span class="kw">true</span>
+
+<span class="key">read_replica</span>:
+  <span class="sym">&lt;&lt;</span>: <span class="anc">*base-db</span>    <span class="cm"># merge all keys from base_db</span>
+  <span class="key">host</span>: <span class="val">replica.internal</span>   <span class="cm"># override just this one key</span></pre>
+
+  <p>Result — <code>read_replica</code> has all three keys from <code>base_db</code>, with <code>host</code> overridden:</p>
+
+  <pre><span class="key">read_replica</span>:
+  <span class="key">host</span>: <span class="val">replica.internal</span>
+  <span class="key">port</span>: <span class="num">5432</span>
+  <span class="key">ssl</span>:  <span class="kw">true</span></pre>
+
+  <p>Keys defined explicitly in the mapping take priority over merged keys. The merge supplies defaults; local keys override.</p>
+
+  <h3>Merging multiple anchors</h3>
+  <p>You can merge from a sequence of anchors to compose from several bases:</p>
+
+  <pre><span class="key">timeouts</span>: <span class="anc">&amp;timeouts</span>
+  <span class="key">connect_timeout</span>: <span class="num">5</span>
+  <span class="key">read_timeout</span>:    <span class="num">30</span>
+
+<span class="key">retry</span>: <span class="anc">&amp;retry</span>
+  <span class="key">max_retries</span>: <span class="num">3</span>
+  <span class="key">backoff_ms</span>:  <span class="num">200</span>
+
+<span class="key">http_client</span>:
+  <span class="sym">&lt;&lt;</span>: <span class="sym">[</span><span class="anc">*timeouts</span><span class="sym">,</span> <span class="anc">*retry</span><span class="sym">]</span>   <span class="cm"># merge both</span>
+  <span class="key">base_url</span>: <span class="str">"https://api.example.com"</span></pre>
+
+  <p>When multiple sources provide the same key, the first listed wins (left-to-right). Explicit local keys always win over all merged sources.</p>
+
+  <!-- ── 5. yaml.v3 gotchas ── -->
+  <h2>yaml.v3 gotchas</h2>
+
+  <h3>The merge key is not standard YAML 1.2</h3>
+  <p>The <code>&lt;&lt;</code> merge key is defined in an older YAML 1.1 proposal, not the YAML 1.2 spec itself. yaml.v3 supports it, but not all parsers do. It's safe to use with Go's yaml.v3, but document the dependency if portability matters.</p>
+
+  <h3>Aliases are copies, not references</h3>
+  <p>yaml.v3 expands each alias into an independent copy of the value. Mutating a Go struct field that came from an alias does <em>not</em> affect other structs that resolved the same anchor — Go values don't share memory just because they came from the same anchor.</p>
+
+  <h3>Circular aliases are forbidden</h3>
+
+  <pre><span class="key">a</span>: <span class="anc">&amp;a</span>
+  <span class="key">b</span>: <span class="anc">*a</span>    <span class="cm"># error: anchor "a" value references itself</span></pre>
+
+  <p>yaml.v3 will return a parse error. Circular structures are not representable in YAML.</p>
+
+  <h3>Anchor name scope is the whole document</h3>
+  <p>If you define the same anchor name twice in a document, the second definition shadows the first from that point forward. This is valid YAML but confusing — treat anchor names as document-scoped identifiers and keep them unique.</p>
+
+  <!-- ── 6. Practical pattern ── -->
+  <h2>Practical pattern for Go CLI configs</h2>
+
+  <p>A common pattern: define a <code>_defaults</code> block at the top (anchored) that is never read by Go — its sole purpose is to be merged elsewhere. The leading underscore signals "not a real config key":</p>
+
+  <pre><span class="key">_defaults</span>:
+  <span class="key">log</span>: <span class="anc">&amp;log-defaults</span>
+    <span class="key">level</span>:  <span class="val">info</span>
+    <span class="key">format</span>: <span class="val">json</span>
+  <span class="key">timeouts</span>: <span class="anc">&amp;timeouts</span>
+    <span class="key">connect</span>: <span class="num">5</span>
+    <span class="key">read</span>:    <span class="num">30</span>
+
+<span class="key">http_server</span>:
+  <span class="sym">&lt;&lt;</span>: <span class="anc">*timeouts</span>
+  <span class="key">port</span>: <span class="num">8080</span>
+  <span class="key">log</span>:
+    <span class="sym">&lt;&lt;</span>: <span class="anc">*log-defaults</span>
+    <span class="key">level</span>: <span class="val">debug</span>   <span class="cm"># override for this service</span>
+
+<span class="key">grpc_server</span>:
+  <span class="sym">&lt;&lt;</span>: <span class="anc">*timeouts</span>
+  <span class="key">port</span>: <span class="num">9090</span></pre>
+
+  <div class="callout warning">
+    <div class="callout-title">yaml.v3 and unknown keys</div>
+    <p>If your Go struct doesn't have a field for <code>_defaults</code>, yaml.v3 silently ignores it by default. To make unknown keys an error (recommended for production configs), use <code>decoder.KnownFields(true)</code> — but you'll need to exclude anchor-only keys or restructure them out of the top-level mapping.</p>
+  </div>
+
+  <!-- ── 7. Quiz ── -->
+  <h2>Check your understanding</h2>
+
+  <div class="quiz">
+    <div class="quiz-title">Quiz 1</div>
+    <p class="quiz-question">Which syntax defines an anchor named <code>defaults</code> on a mapping?</p>
+    <div class="quiz-options">
+      <button class="quiz-option" data-correct="true">&amp;defaults  — ampersand before the value</button>
+      <button class="quiz-option" data-correct="false">*defaults  — asterisk before the value</button>
+      <button class="quiz-option" data-correct="false">!defaults  — exclamation before the value</button>
+      <button class="quiz-option" data-correct="false">#defaults  — hash before the value</button>
+    </div>
+    <div class="quiz-feedback"
+         data-correct="Correct. &amp; defines (anchors) a node. * references (aliases) it. ! is the tag indicator. # starts a comment."
+         data-incorrect="&amp; is the anchor indicator. * is the alias indicator. You define with &amp;, reference with *.">
+    </div>
+  </div>
+
+  <div class="quiz">
+    <div class="quiz-title">Quiz 2</div>
+    <p class="quiz-question">A mapping has <code>&lt;&lt;: *base</code> and also defines key <code>port: 9090</code>. <code>*base</code> also contains <code>port: 5432</code>. What is the final value of <code>port</code>?</p>
+    <div class="quiz-options">
+      <button class="quiz-option" data-correct="true">9090 — local keys override merged keys</button>
+      <button class="quiz-option" data-correct="false">5432 — merged keys take priority</button>
+      <button class="quiz-option" data-correct="false">error — duplicate key conflict</button>
+      <button class="quiz-option" data-correct="false">null — conflicting values cancel out</button>
+    </div>
+    <div class="quiz-feedback"
+         data-correct="Correct. Explicit keys in a mapping always override keys introduced by a merge. &lt;&lt; provides defaults; local definitions win."
+         data-incorrect="Local explicit keys always beat merged keys. The merge key &lt;&lt; acts as a fallback — any key you define locally overrides it.">
+    </div>
+  </div>
+
+  <div class="quiz">
+    <div class="quiz-title">Quiz 3</div>
+    <p class="quiz-question">After yaml.v3 unmarshals two structs from the same anchor, you modify a field on one. What happens to the other struct?</p>
+    <div class="quiz-options">
+      <button class="quiz-option" data-correct="true">Nothing — each struct is an independent copy</button>
+      <button class="quiz-option" data-correct="false">Both change — they share the anchored memory</button>
+      <button class="quiz-option" data-correct="false">A panic — mutating aliased values is forbidden</button>
+      <button class="quiz-option" data-correct="false">Depends — only pointer fields are shared</button>
+    </div>
+    <div class="quiz-feedback"
+         data-correct="Correct. yaml.v3 expands anchors into independent copies. Go structs don't share memory just because they came from the same anchor — aliases are a YAML-parse-time concept only."
+         data-incorrect="yaml.v3 resolves aliases at parse time into independent copies. Once in Go memory, the structs are completely independent — there is no live link to the anchor.">
+    </div>
+  </div>
+
+  <!-- ── Primary source ── -->
+  <div class="primary-source">
+    <div class="primary-source-label">Primary source for this lesson</div>
+    <p><a href="https://yaml.org/spec/1.2.2/#3222-anchors-and-aliases" target="_blank">YAML 1.2.2 Specification — §3.2.2.2: Anchors and Aliases</a> defines the anchor/alias model. The merge key <code>&lt;&lt;</code> is defined in the separate <a href="https://yaml.org/type/merge.html" target="_blank">YAML merge type document</a> (a 1.1-era extension). For Go-specific behaviour see the <a href="https://pkg.go.dev/gopkg.in/yaml.v3#Decoder.KnownFields" target="_blank">yaml.v3 KnownFields docs</a>.</p>
+  </div>
+
+  <!-- ── Ask teacher ── -->
+  <div class="ask-teacher">
+    <strong>Questions?</strong> Ask your teacher directly — type your question in the chat. Good things to explore: <em>Can I anchor a sequence and merge it into another sequence?</em> or <em>How do I prevent unknown keys like <code>_defaults</code> from failing KnownFields validation?</em> or <em>Are there alternatives to anchors for sharing config across environments?</em>
+  </div>
+
+  <!-- ── Nav ── -->
+  <nav class="lesson-nav">
+    <a href="0003-block-scalars.html">← Prev: Block Scalars</a>
+    <a href="0005-tags-and-types.html">Next: Tags &amp; Types →</a>
+  </nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

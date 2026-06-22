@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 1 — YAML Scalars</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="lesson-container">
+
+  <header class="lesson-header">
+    <div class="breadcrumb">YAML Spec · Lesson 1 of ?</div>
+    <h1>Scalars — the atoms of YAML</h1>
+    <p class="subtitle">Every value in a config file is ultimately a scalar. Know them exactly.</p>
+    <div class="lesson-meta">
+      <span>⏱ ~15 min</span>
+      <span>🎯 Scalar types, quoting rules, gotchas for yaml.v3</span>
+    </div>
+  </header>
+
+  <!-- ── 1. What is a scalar ── -->
+  <h2>What is a scalar?</h2>
+
+  <p>A <strong>scalar</strong> is a single, indivisible value — a string, a number, a boolean, or null. Scalars are the leaves of every YAML document. Every key name is a scalar. Every value that isn't a list or a map is a scalar.</p>
+
+  <pre><span class="key">host</span>:     <span class="val">localhost</span>      <span class="cm"># string scalar</span>
+<span class="key">port</span>:     <span class="num">5432</span>           <span class="cm"># integer scalar</span>
+<span class="key">timeout</span>: <span class="num">30.5</span>           <span class="cm"># float scalar</span>
+<span class="key">debug</span>:   <span class="kw">true</span>           <span class="cm"># boolean scalar</span>
+<span class="key">secret</span>:  <span class="cm">#              &lt;-- null scalar (empty value)</span></pre>
+
+  <p>YAML infers the type of a scalar from its content — a process called <strong>implicit typing</strong>. The rules are baked into the spec and determine what Go type your <code>yaml.v3</code> unmarshaller will produce.</p>
+
+  <!-- ── 2. Strings ── -->
+  <h2>Strings</h2>
+
+  <p>A string is any scalar that doesn't look like a number, boolean, or null. No quotes needed in the common case:</p>
+
+  <pre><span class="key">name</span>: <span class="val">my-cli-tool</span>
+<span class="key">description</span>: <span class="val">A tool that does things</span></pre>
+
+  <h3>When you must quote</h3>
+
+  <p>Quoting forces YAML to treat the value as a string, overriding implicit typing. You must quote when:</p>
+
+  <ul>
+    <li>The value looks like another type: <code>"true"</code>, <code>"42"</code>, <code>"null"</code>, <code>"1.0e3"</code></li>
+    <li>The value contains special characters that begin a structure: <code>:</code>, <code>#</code>, <code>[</code>, <code>{</code>, <code>,</code></li>
+    <li>The value has leading or trailing spaces you want to preserve</li>
+    <li>The value starts with an indicator character: <code>-</code>, <code>?</code>, <code>|</code>, <code>&gt;</code>, <code>!</code>, <code>&amp;</code>, <code>*</code>, <code>%</code></li>
+  </ul>
+
+  <h3>Single quotes vs double quotes</h3>
+
+  <div class="compare">
+    <div class="compare-col">
+      <h4>Single quotes <code>' '</code></h4>
+      <pre><span class="str">'It''s alive'</span>      <span class="cm"># '' escapes a '
+# No backslash sequences
+# What you see is what you get</span></pre>
+    </div>
+    <div class="compare-col">
+      <h4>Double quotes <code>" "</code></h4>
+      <pre><span class="str">"Line one\nLine two"</span>
+<span class="str">"Tab\there"</span>
+<span class="str">"Unicode: é"</span>
+<span class="cm"># Backslash escapes work</span></pre>
+    </div>
+  </div>
+
+  <p>Use single quotes when the string contains backslashes you don't want interpreted (Windows paths, regex patterns). Use double quotes when you need escape sequences like <code>\n</code> or <code>\t</code>.</p>
+
+  <!-- ── 3. Booleans ── -->
+  <h2>Booleans — the biggest gotcha</h2>
+
+  <p>YAML 1.1 (which many libraries implement, including older versions of Go's yaml) recognised a <em>very</em> wide set of boolean literals:</p>
+
+  <pre><span class="cm"># All of these parsed as booleans in YAML 1.1:</span>
+<span class="kw">true</span>  <span class="kw">True</span>  <span class="kw">TRUE</span>
+<span class="kw">false</span> <span class="kw">False</span> <span class="kw">FALSE</span>
+<span class="kw">yes</span>   <span class="kw">Yes</span>   <span class="kw">YES</span>
+<span class="kw">no</span>    <span class="kw">No</span>    <span class="kw">NO</span>
+<span class="kw">on</span>    <span class="kw">On</span>    <span class="kw">ON</span>
+<span class="kw">off</span>   <span class="kw">Off</span>   <span class="kw">OFF</span></pre>
+
+  <div class="callout gotcha">
+    <div class="callout-title">Gotcha for Go config files</div>
+    <p><strong>yaml.v3 implements YAML 1.1 boolean rules.</strong> If your config has a key like <code>mode: on</code> and the Go field is a <code>string</code>, yaml.v3 will fail to unmarshal it — it sees a boolean, not a string. Quote it: <code>mode: "on"</code>. Country codes like <code>NO</code> (Norway) are a classic victim of this rule.</p>
+  </div>
+
+  <p>YAML 1.2 (the current spec) restricts booleans to only <code>true</code> and <code>false</code> (case-sensitive). But until yaml.v3 fully migrates, treat <code>yes/no/on/off</code> as reserved words in config files.</p>
+
+  <!-- ── 4. Integers ── -->
+  <h2>Integers</h2>
+
+  <p>YAML supports decimal, hexadecimal, and octal integer literals:</p>
+
+  <pre><span class="key">decimal</span>: <span class="num">42</span>
+<span class="key">hex</span>:     <span class="num">0xFF</span>          <span class="cm"># 255</span>
+<span class="key">octal</span>:   <span class="num">0o17</span>          <span class="cm"># 15  (YAML 1.2 octal)</span>
+<span class="key">old_oct</span>: <span class="num">017</span>           <span class="cm"># 15  (YAML 1.1 octal — leading zero!)</span>
+<span class="key">negative</span>: <span class="num">-7</span></pre>
+
+  <div class="callout warning">
+    <div class="callout-title">Warning</div>
+    <p>In YAML 1.1, a leading zero triggers octal parsing: <code>port: 0777</code> becomes decimal 511, not 777. yaml.v3 inherits this. Always use <code>0o</code> prefix for octal, or quote the value if you mean a string like <code>"0777"</code>.</p>
+  </div>
+
+  <!-- ── 5. Floats ── -->
+  <h2>Floats</h2>
+
+  <pre><span class="key">rate</span>:       <span class="num">1.5</span>
+<span class="key">scientific</span>: <span class="num">1.5e3</span>        <span class="cm"># 1500.0</span>
+<span class="key">infinity</span>:   <span class="num">.inf</span>         <span class="cm"># positive infinity</span>
+<span class="key">neg_inf</span>:    <span class="num">-.inf</span>
+<span class="key">not_a_num</span>:  <span class="num">.nan</span></pre>
+
+  <p>These are valid YAML scalars and will unmarshal into Go <code>float64</code>. <code>.inf</code> and <code>.nan</code> map to <code>math.Inf(1)</code> and <code>math.NaN()</code> respectively.</p>
+
+  <!-- ── 6. Null ── -->
+  <h2>Null</h2>
+
+  <pre><span class="key">optional_field</span>: <span class="kw">null</span>      <span class="cm"># explicit null</span>
+<span class="key">also_null</span>:      <span class="kw">~</span>          <span class="cm"># tilde is the null shorthand</span>
+<span class="key">empty_value</span>:               <span class="cm"># bare empty value is also null</span></pre>
+
+  <p>In Go, <code>null</code> unmarshals to the zero value of the target type — <code>nil</code> for pointers, <code>""</code> for strings, <code>0</code> for ints. Use a pointer type in your Go struct if you need to distinguish "not present" from "zero value".</p>
+
+  <!-- ── 7. Plain style vs quoted ── -->
+  <h2>Plain scalars — the implicit typing resolution order</h2>
+
+  <p>When YAML sees an unquoted scalar, it tests it against this ordered list of patterns. The first match wins:</p>
+
+  <div class="diagram">Null?       →  null | ~ | (empty)
+Boolean?    →  true | false | yes | no | on | off (+ variants)
+Integer?    →  [-+]?[0-9]+  |  0x[0-9a-fA-F]+  |  0[0-7]+
+Float?      →  [-+]?(\.[0-9]+|[0-9]+\.[0-9]*)([eE][-+]?[0-9]+)?
+            |  [-+]?(\.inf|\.Inf|\.INF)  |  \.nan
+String      →  everything else</div>
+
+  <p>This is why <code>true</code> is a boolean — it matches the boolean pattern before string is reached. Quoting exits this resolution entirely.</p>
+
+  <!-- ── 8. Quiz ── -->
+  <h2>Check your understanding</h2>
+
+  <div class="quiz">
+    <div class="quiz-title">Quiz 1</div>
+    <p class="quiz-question">What type does yaml.v3 assign to the unquoted value <code>NO</code> in a YAML document?</p>
+    <div class="quiz-options">
+      <button class="quiz-option" data-correct="false">string — "NO"</button>
+      <button class="quiz-option" data-correct="true">boolean — false</button>
+      <button class="quiz-option" data-correct="false">null — (zero value)</button>
+      <button class="quiz-option" data-correct="false">error — invalid YAML</button>
+    </div>
+    <div class="quiz-feedback"
+         data-correct="Correct. yaml.v3 follows YAML 1.1 rules, where NO (in any case) is a boolean false. This is the Norway Problem."
+         data-incorrect="yaml.v3 implements YAML 1.1, where NO/no/No are all boolean false — the infamous 'Norway Problem'. Quote it to get the string.">
+    </div>
+  </div>
+
+  <div class="quiz">
+    <div class="quiz-title">Quiz 2</div>
+    <p class="quiz-question">What decimal value does yaml.v3 produce for the unquoted scalar <code>017</code>?</p>
+    <div class="quiz-options">
+      <button class="quiz-option" data-correct="false">17 — treated as decimal</button>
+      <button class="quiz-option" data-correct="true">15 — treated as octal</button>
+      <button class="quiz-option" data-correct="false">0  — leading zero, zero value</button>
+      <button class="quiz-option" data-correct="false">"017" — string, ambiguous</button>
+    </div>
+    <div class="quiz-feedback"
+         data-correct="Correct. A leading zero triggers YAML 1.1 octal parsing: 017 = 1×8 + 7 = 15. Use 0o17 (YAML 1.2) or quote it."
+         data-incorrect="In YAML 1.1, a bare leading zero means octal. 017 = 15. Use the 0o prefix for clarity or quote if it should be a string.">
+    </div>
+  </div>
+
+  <div class="quiz">
+    <div class="quiz-title">Quiz 3</div>
+    <p class="quiz-question">Which quoting style supports <code>\n</code> and <code>é</code> escape sequences?</p>
+    <div class="quiz-options">
+      <button class="quiz-option" data-correct="false">single quotes — 'value'</button>
+      <button class="quiz-option" data-correct="true">double quotes — "value"</button>
+      <button class="quiz-option" data-correct="false">plain (unquoted) scalars</button>
+      <button class="quiz-option" data-correct="false">block scalars with | indicator</button>
+    </div>
+    <div class="quiz-feedback"
+         data-correct="Correct. Only double-quoted scalars process backslash escape sequences. Single-quoted scalars are literal — the only escape is '' for a literal apostrophe."
+         data-incorrect="Only double-quoted scalars process escape sequences. In single-quoted scalars, backslashes are literal characters.">
+    </div>
+  </div>
+
+  <!-- ── Primary source ── -->
+  <div class="primary-source">
+    <div class="primary-source-label">Primary source for this lesson</div>
+    <p><a href="https://yaml.org/spec/1.2.2/#chapter-10-recommended-schemas" target="_blank">YAML 1.2.2 Specification — §10: Recommended Schemas</a> — defines the Core Schema, which specifies exactly how unquoted scalars are typed. Sections 10.3.1 (null), 10.3.2 (bool), 10.3.3 (int), and 10.3.4 (float) are the ones to read.</p>
+  </div>
+
+  <!-- ── Ask teacher ── -->
+  <div class="ask-teacher">
+    <strong>Questions?</strong> Ask your teacher directly — type your question in the chat. Good things to explore: <em>How does yaml.v3 handle a string like <code>"3.0"</code> vs <code>3.0</code>?</em> or <em>What's the safest way to represent version strings like <code>1.0</code> in a config file?</em>
+  </div>
+
+  <!-- ── Nav ── -->
+  <nav class="lesson-nav">
+    <span></span>
+    <a href="0002-sequences-and-mappings.html">Next: Sequences &amp; Mappings →</a>
+  </nav>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>
